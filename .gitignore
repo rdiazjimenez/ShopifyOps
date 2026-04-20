@@ -1,0 +1,13 @@
+# Archivo generado (contiene credenciales en la hoja Parámetros)
+ShopifyExport.xlsx
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# Editor
+.vscode/
+*.swp
+*.swo
