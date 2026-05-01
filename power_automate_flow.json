@@ -1,0 +1,172 @@
+{
+  "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+  "description": "Recibe un array de variantes desde Office Scripts y actualiza precios en Shopify via GraphQL. Devuelve el estado de cada actualización.",
+  "parameters": {
+    "SHOPIFY_STORE": {
+      "type": "string",
+      "defaultValue": "ilafiu.myshopify.com",
+      "description": "Dominio de la tienda Shopify (ej: mi-tienda.myshopify.com)"
+    },
+    "SHOPIFY_TOKEN": {
+      "type": "securestring",
+      "defaultValue": "",
+      "description": "Access token shpat_... de la app de Shopify"
+    },
+    "SHOPIFY_API_VERSION": {
+      "type": "string",
+      "defaultValue": "2026-04",
+      "description": "Versión de la API de Shopify"
+    }
+  },
+  "triggers": {
+    "manual": {
+      "type": "Request",
+      "kind": "Http",
+      "inputs": {
+        "schema": {
+          "type": "object",
+          "properties": {
+            "variantes": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "varianteId":        { "type": "string" },
+                  "precioNuevo":       { "type": "string" },
+                  "precioComparacion": { "type": "string" }
+                },
+                "required": ["varianteId", "precioNuevo"]
+              }
+            }
+          },
+          "required": ["variantes"]
+        }
+      }
+    }
+  },
+  "actions": {
+    "Inicializar_Resultados": {
+      "type": "InitializeVariable",
+      "inputs": {
+        "variables": [{
+          "name": "resultados",
+          "type": "array",
+          "value": []
+        }]
+      },
+      "runAfter": {}
+    },
+    "Por_Cada_Variante": {
+      "type": "Foreach",
+      "foreach": "@triggerBody()?['variantes']",
+      "actions": {
+        "Construir_Input": {
+          "type": "Compose",
+          "inputs": {
+            "id": "@items('Por_Cada_Variante')?['varianteId']",
+            "price": "@items('Por_Cada_Variante')?['precioNuevo']",
+            "compareAtPrice": "@if(equals(items('Por_Cada_Variante')?['precioComparacion'], ''), null, items('Por_Cada_Variante')?['precioComparacion'])"
+          },
+          "runAfter": {}
+        },
+        "Construir_Mutation": {
+          "type": "Compose",
+          "inputs": {
+            "query": "mutation($input: ProductVariantInput!) { productVariantUpdate(input: $input) { productVariant { id price compareAtPrice } userErrors { message } } }",
+            "variables": {
+              "input": "@outputs('Construir_Input')"
+            }
+          },
+          "runAfter": {
+            "Construir_Input": ["Succeeded"]
+          }
+        },
+        "Llamar_Shopify_GraphQL": {
+          "type": "Http",
+          "inputs": {
+            "method": "POST",
+            "uri": "https://@{parameters('SHOPIFY_STORE')}/admin/api/@{parameters('SHOPIFY_API_VERSION')}/graphql.json",
+            "headers": {
+              "X-Shopify-Access-Token": "@parameters('SHOPIFY_TOKEN')",
+              "Content-Type": "application/json"
+            },
+            "body": "@outputs('Construir_Mutation')"
+          },
+          "runAfter": {
+            "Construir_Mutation": ["Succeeded"]
+          }
+        },
+        "Verificar_Errores": {
+          "type": "Condition",
+          "expression": {
+            "and": [{
+              "equals": [
+                "@length(body('Llamar_Shopify_GraphQL')?['data']?['productVariantUpdate']?['userErrors'])",
+                0
+              ]
+            }]
+          },
+          "actions": {
+            "Agregar_OK": {
+              "type": "AppendToArrayVariable",
+              "inputs": {
+                "name": "resultados",
+                "value": {
+                  "varianteId": "@items('Por_Cada_Variante')?['varianteId']",
+                  "estado": "OK"
+                }
+              }
+            }
+          },
+          "else": {
+            "actions": {
+              "Agregar_Error": {
+                "type": "AppendToArrayVariable",
+                "inputs": {
+                  "name": "resultados",
+                  "value": {
+                    "varianteId": "@items('Por_Cada_Variante')?['varianteId']",
+                    "estado": "@concat('ERROR: ', body('Llamar_Shopify_GraphQL')?['data']?['productVariantUpdate']?['userErrors']?[0]?['message'])"
+                  }
+                }
+              }
+            }
+          },
+          "runAfter": {
+            "Llamar_Shopify_GraphQL": ["Succeeded", "Failed"]
+          }
+        },
+        "Manejar_Error_HTTP": {
+          "type": "AppendToArrayVariable",
+          "inputs": {
+            "name": "resultados",
+            "value": {
+              "varianteId": "@items('Por_Cada_Variante')?['varianteId']",
+              "estado": "@concat('ERROR HTTP: ', string(outputs('Llamar_Shopify_GraphQL')?['statusCode']))"
+            }
+          },
+          "runAfter": {
+            "Llamar_Shopify_GraphQL": ["Failed", "TimedOut"]
+          }
+        }
+      },
+      "runAfter": {
+        "Inicializar_Resultados": ["Succeeded"]
+      }
+    },
+    "Responder_a_Office_Script": {
+      "type": "Response",
+      "inputs": {
+        "statusCode": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "@variables('resultados')"
+      },
+      "runAfter": {
+        "Por_Cada_Variante": ["Succeeded", "Failed"]
+      }
+    }
+  },
+  "outputs": {}
+}

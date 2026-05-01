@@ -1,21 +1,8 @@
 #!/usr/bin/env python3
-"""
-update_prices.py — Actualiza precios de variantes en Shopify.
-
-Lee la tabla ActualizarPrecios de ShopifyExport.xlsx, obtiene un token OAuth
-con las credenciales de la hoja Parametros, y llama la mutación
-productVariantUpdate por cada fila que tenga Precio_Nuevo relleno.
-La columna Estado se escribe con OK o ERROR:<msg>.
-
-Uso:
-    python update_prices.py
-    python update_prices.py --file ruta/otro.xlsx
-    python update_prices.py --dry-run   # muestra cambios sin llamar a Shopify
-"""
-
 import argparse
 import sys
 import time
+import json
 from pathlib import Path
 from typing import Optional
 
@@ -23,10 +10,18 @@ DEFAULT_FILE  = Path(__file__).parent / "ShopifyExport.xlsx"
 PARAMS_TABLE  = "Configuracion"
 UPDATES_TABLE = "ActualizarPrecios"
 
+VARIANT_PRODUCT_QUERY = """
+query getVariantProduct($id: ID!) {
+  productVariant(id: $id) {
+    product { id }
+  }
+}
+"""
+
 MUTATION = """
-mutation UpdateVariantPrice($input: ProductVariantInput!) {
-  productVariantUpdate(input: $input) {
-    productVariant {
+mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+  productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+    productVariants {
       id
       price
       compareAtPrice
@@ -39,215 +34,199 @@ mutation UpdateVariantPrice($input: ProductVariantInput!) {
 }
 """
 
-
-# ── Helpers de openpyxl ──────────────────────────────────────────────────────
-
-def find_table(wb, table_name: str):
-    """Devuelve (worksheet, WorksheetTable) para la tabla con el nombre dado."""
-    for ws in wb.worksheets:
-        for tbl in ws.tables.values():
-            if tbl.name == table_name:
-                return ws, tbl
-    raise ValueError(
-        f"Tabla '{table_name}' no encontrada en el archivo.\n"
-        "¿Ejecutaste build.py para generarlo?"
-    )
-
-
-def table_cells(ws, tbl):
-    """Devuelve (headers: list[str], rows: list[tuple[Cell]])."""
-    all_rows = list(ws[tbl.ref])
-    headers  = [c.value for c in all_rows[0]]
-    data     = all_rows[1:]
-    return headers, data
-
-
-# ── API de Shopify ───────────────────────────────────────────────────────────
-
-def shopify_gql(store: str, token: str, query: str, variables: dict, api_version: str = "2024-10") -> dict:
+def get_shopify_token(store: str, client_id: str, client_secret: str) -> str:
     import requests
-    resp = requests.post(
-        f"https://{store}/admin/api/{api_version}/graphql.json",
-        json={"query": query, "variables": variables},
-        headers={
-            "X-Shopify-Access-Token": token,
-            "Content-Type":           "application/json",
-        },
-        timeout=30,
-    )
-    resp.raise_for_status()
-    return resp.json()
+    
+    # Limpieza estricta del host
+    host = store.replace("https://", "").replace("http://", "").split("/")[0]
+    if ".myshopify.com" not in host:
+        host = f"{host}.myshopify.com"
+        
+    url = f"https://{host}/admin/oauth/access_token"
 
+    payload = {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "grant_type": "client_credentials",
+    }
 
-# ── Lógica principal ─────────────────────────────────────────────────────────
+    print(f"-> Solicitando nuevo token para {host}...")
+
+    try:
+        resp = requests.post(
+            url,
+            data=payload,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=15
+        )
+        
+        if resp.status_code != 200:
+            # Si falla con 401, imprimimos el detalle para diagnosticar
+            print(f"DEBUG - Status: {resp.status_code}")
+            print(f"DEBUG - Response: {resp.text}")
+            raise Exception(f"Credenciales inválidas (401). Revisa ClientID y AccessToken en Excel.")
+            
+        data = resp.json()
+        token = data.get("access_token")
+        if not token:
+            raise Exception("No se encontró 'access_token' en la respuesta.")
+        return token
+
+    except Exception as e:
+        raise Exception(f"Fallo en la conexión: {str(e)}")
 
 def update_prices(file_path: Path, dry_run: bool = False) -> None:
     try:
         import openpyxl
-        import requests  # noqa: F401
-    except ImportError as e:
-        print(f"ERROR: {e}\nEjecuta: pip install -r requirements.txt", file=sys.stderr)
+        import requests
+        import xlwings as xw
+    except ImportError:
+        print("ERROR: Instala openpyxl, requests y xlwings", file=sys.stderr)
         sys.exit(1)
 
-    import openpyxl
-
-    # openpyxl no puede escribir si Excel tiene el archivo abierto (Windows lock)
     try:
-        wb = openpyxl.load_workbook(file_path)
+        wb_read = openpyxl.load_workbook(file_path, data_only=True)
     except PermissionError:
-        print(
-            "ERROR: No se puede abrir el archivo — está abierto en Excel.\n"
-            "Cierra Excel y vuelve a ejecutar el script.",
-            file=sys.stderr,
-        )
+        print("ERROR: El archivo está abierto en Excel. Ciérralo.", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Leyendo: {file_path}")
-
-    # Credenciales desde la hoja Parametros
-    ws_p, tbl_p    = find_table(wb, PARAMS_TABLE)
+    # 1. Leer Configuración
+    ws_p, tbl_p = find_table(wb_read, PARAMS_TABLE)
     p_headers, p_rows = table_cells(ws_p, tbl_p)
-
-    def get_param(key: str) -> Optional[str]:
-        ki, vi = p_headers.index("Parametro"), p_headers.index("Valor")
-        for row in p_rows:
-            if row[ki].value == key:
-                v = row[vi].value
-                return str(v).strip() if v is not None else None
+    
+    def get_p(key: str):
+        # Localizamos columnas dinámicamente
+        ki = next(i for i, h in enumerate(p_headers) if str(h).strip().upper() == "PARAMETRO")
+        vi = next(i for i, h in enumerate(p_headers) if str(h).strip().upper() == "VALOR")
+        for r in p_rows:
+            if str(r[ki].value).strip().upper() == key.upper():
+                val = r[vi].value
+                return str(val).strip() if val else None
         return None
 
-    store        = get_param("Tienda")
-    access_token = get_param("AccessToken")
-    api_version  = get_param("API_Version") or "2024-10"
+    store    = get_p("Tienda")
+    c_id     = get_p("ClientID")
+    c_secret = get_p("AccessToken") # Este es el que actúa como Secret
+    version  = get_p("API_Version") or "2026-04"
 
-    if not store or not access_token:
-        print(
-            "ERROR: Rellena Tienda y AccessToken en la hoja Parametros.",
-            file=sys.stderr,
-        )
+    if not all([store, c_id, c_secret]):
+        print(f"ERROR: Datos incompletos (Tienda: {store}, ID: {c_id}, Secret: {'Presente' if c_secret else 'Faltante'})")
         sys.exit(1)
 
-    # Tabla de actualizaciones
-    ws_u, tbl_u    = find_table(wb, UPDATES_TABLE)
+    # 2. Obtención del Token
+    try:
+        active_token = "dry_run" if dry_run else get_shopify_token(store, c_id, c_secret)
+    except Exception as e:
+        print(f"Error de Autenticación: {e}")
+        sys.exit(1)
+
+    # 3. Procesar Actualizaciones
+    ws_u, tbl_u = find_table(wb_read, UPDATES_TABLE)
     u_headers, u_rows = table_cells(ws_u, tbl_u)
 
+    app = xw.App(visible=False)
+    wb_xw = app.books.open(str(file_path.resolve()))
+    ws_xw = wb_xw.sheets[ws_u.title]
+
+    def f_col(target):
+        t_up = target.upper()
+        for i, h in enumerate(u_headers):
+            if str(h).strip().replace(" ", "_").upper() == t_up: return i
+        raise ValueError(f"Columna {target} no encontrada.")
+
     try:
-        col_id    = u_headers.index("Variante_ID")
-        col_sku   = u_headers.index("SKU")
-        col_price = u_headers.index("Precio_Nuevo")
-        col_cmp   = u_headers.index("Precio_Comparacion_Nuevo")
-        col_state = u_headers.index("Estado")
-    except ValueError as e:
-        print(f"ERROR: Columna faltante en tabla ActualizarPrecios — {e}", file=sys.stderr)
+        c_id_v = f_col("Variante_ID")
+        c_sku  = f_col("SKU")
+        c_prc  = f_col("Precio_Nuevo")
+        c_cmp  = f_col("Precio_Comparacion_Nuevo")
+        c_st   = f_col("Estado")
+    except Exception as e:
+        print(f"ERROR: {e}")
         sys.exit(1)
 
-    # Filas con Precio_Nuevo relleno
-    to_update = [
-        row for row in u_rows
-        if row[col_price].value is not None
-        and str(row[col_price].value).strip() != ""
-    ]
+    to_upd = [r for r in u_rows if r[c_prc].value not in (None, "")]
+    print(f"Procesando {len(to_upd)} variantes...")
 
-    if not to_update:
-        print("No hay filas con Precio_Nuevo relleno. Nada que actualizar.")
-        return
+    estado_col = u_rows[0][c_st].column  # número de columna de Estado en Excel
 
-    prefix = "[DRY-RUN] " if dry_run else ""
+    def write_estado(row, value):
+        ws_xw.cells(row[0].row, estado_col).value = value
 
-    token = "dry-run-token" if dry_run else access_token
+    for row in to_upd:
+        v_id  = row[c_id_v].value
+        sku   = row[c_sku].value
+        p_new = str(row[c_prc].value).strip()
+        c_new = row[c_cmp].value
 
-    print(f"{prefix}Actualizando {len(to_update)} variante(s)...")
-
-    ok_count = err_count = 0
-
-    for row_cells in to_update:
-        variant_id = row_cells[col_id].value
-        sku        = row_cells[col_sku].value
-        price_new  = str(row_cells[col_price].value).strip()
-        cmp_new    = row_cells[col_cmp].value
-        label      = str(variant_id or sku or "fila desconocida")
-
-        if not variant_id:
-            msg = "ERROR: Variante_ID vacío — fila ignorada"
-            print(f"  ✗ {sku or '?'} — {msg}")
-            row_cells[col_state].value = msg
-            err_count += 1
+        if not v_id:
+            write_estado(row, "ERROR: Sin ID")
             continue
 
-        mutation_input: dict = {"id": str(variant_id), "price": price_new}
-        if cmp_new is not None and str(cmp_new).strip() != "":
-            mutation_input["compareAtPrice"] = str(cmp_new).strip()
-
-        if dry_run:
-            cmp_info = f", comparación: {cmp_new}" if cmp_new else ""
-            print(f"  ~ {label[:60]} → precio: {price_new}{cmp_info}")
-            row_cells[col_state].value = "DRY-RUN"
-            ok_count += 1
-            continue
+        gid = str(v_id) if str(v_id).startswith("gid://") else f"gid://shopify/ProductVariant/{v_id}"
+        m_input = {"id": gid, "price": p_new}
+        if c_new not in (None, ""):
+            m_input["compareAtPrice"] = str(c_new).strip()
 
         try:
-            result      = shopify_gql(store, token, MUTATION, {"input": mutation_input}, api_version)
-            pv_data     = result.get("data", {}).get("productVariantUpdate", {})
-            user_errors = pv_data.get("userErrors", [])
-
-            if user_errors:
-                msg = "; ".join(f"{e['field']}: {e['message']}" for e in user_errors)
-                print(f"  ✗ {label[:60]} — {msg}")
-                row_cells[col_state].value = f"ERROR: {msg}"
-                err_count += 1
+            if not dry_run:
+                host = store if ".myshopify.com" in store else f"{store}.myshopify.com"
+                url  = f"https://{host}/admin/api/{version}/graphql.json"
+                h    = {"X-Shopify-Access-Token": active_token, "Content-Type": "application/json"}
+                product_id = _get_product_id(gid, url, h, requests)
+                resp = requests.post(url, json={"query": MUTATION, "variables": {"productId": product_id, "variants": [m_input]}}, headers=h, timeout=20)
+                if resp.status_code != 200:
+                    raise Exception(f"HTTP {resp.status_code}: {resp.text}")
+                res = resp.json()
+                gql_errs  = res.get("errors", [])
+                user_errs = res.get("data", {}).get("productVariantsBulkUpdate", {}).get("userErrors", [])
+                if gql_errs:
+                    raise Exception(gql_errs[0].get("message", str(gql_errs[0])))
+                if user_errs:
+                    msg = user_errs[0]["message"]
+                    write_estado(row, f"ERROR: {msg}")
+                    print(f"  ✗ {sku}: {msg}")
+                else:
+                    write_estado(row, "OK")
+                    print(f"  ✓ {sku}: {p_new}")
             else:
-                updated = pv_data["productVariant"]
-                print(f"  ✓ {label[:60]} → {updated['price']}")
-                row_cells[col_state].value = "OK"
-                ok_count += 1
-
+                write_estado(row, "DRY-RUN")
+                print(f"  [DRY] {sku}: {p_new}")
         except Exception as e:
-            msg = str(e)
-            print(f"  ✗ {label[:60]} — {msg}")
-            row_cells[col_state].value = f"ERROR: {msg}"
-            err_count += 1
+            write_estado(row, f"ERROR: {str(e)}")
+            print(f"  ✗ {sku}: {e}")
 
-        # ~4 req/s para respetar el rate limit de Shopify
         time.sleep(0.25)
 
-    # Guardar workbook con los estados actualizados
     try:
-        wb.save(file_path)
-    except PermissionError:
-        print(
-            "\nADVERTENCIA: No se pudo guardar el archivo (¿Excel lo abriste mientras corría el script?).\n"
-            f"Guarda manualmente los resultados o vuelve a correr con Excel cerrado.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+        wb_xw.save()
+    finally:
+        wb_xw.close()
+        app.quit()
+    print("\nProceso terminado. Excel actualizado.")
 
-    print(f"\n{prefix}Listo: {ok_count} OK, {err_count} error(es).")
-    print("Columna 'Estado' actualizada en la hoja Actualizar_Precios.")
+def _get_product_id(variant_gid: str, url: str, headers: dict, requests) -> str:
+    resp = requests.post(url, json={"query": VARIANT_PRODUCT_QUERY, "variables": {"id": variant_gid}}, headers=headers, timeout=20)
+    if resp.status_code != 200:
+        raise Exception(f"HTTP {resp.status_code} al obtener productId")
+    data = resp.json()
+    errs = data.get("errors", [])
+    if errs:
+        raise Exception(errs[0].get("message", str(errs[0])))
+    return data["data"]["productVariant"]["product"]["id"]
 
+def find_table(wb, t_name):
+    for ws in wb.worksheets:
+        for tbl in ws.tables.values():
+            if tbl.name == t_name: return ws, tbl
+    raise ValueError(f"Tabla {t_name} no encontrada.")
 
-# ── CLI ──────────────────────────────────────────────────────────────────────
-
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Actualiza precios de variantes Shopify desde la hoja Actualizar_Precios"
-    )
-    parser.add_argument(
-        "--file", type=Path, default=DEFAULT_FILE,
-        metavar="PATH", help="Ruta al .xlsx (default: ShopifyExport.xlsx)",
-    )
-    parser.add_argument(
-        "--dry-run", action="store_true",
-        help="Muestra los cambios sin llamar a la API de Shopify",
-    )
-    args = parser.parse_args()
-
-    if not args.file.exists():
-        print(f"ERROR: No se encontró el archivo: {args.file}", file=sys.stderr)
-        print("Ejecuta primero: python build.py", file=sys.stderr)
-        sys.exit(1)
-
-    update_prices(args.file, dry_run=args.dry_run)
-
+def table_cells(ws, tbl):
+    all_rows = list(ws[tbl.ref])
+    return [c.value for c in all_rows[0]], all_rows[1:]
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--file", type=Path, default=DEFAULT_FILE)
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args()
+    update_prices(args.file, args.dry_run)
