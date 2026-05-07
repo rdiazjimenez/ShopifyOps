@@ -1,0 +1,40 @@
+let
+    // 1. CARGA DE ORIGEN PRINCIPAL
+    RawData = SalesBreakdownMonthly,
+
+    // 2. UNIÓN CON VENTAS NUEVOS VS RECURRENTES
+    JoinNewReturning = Table.NestedJoin(RawData, {"month"}, SalesNewReturningMonthly, {"month"}, "SalesNewReturning", JoinKind.LeftOuter),
+    ExpandNewReturning = Table.ExpandTableColumn(JoinNewReturning, "SalesNewReturning", 
+        {"returning_customers", "returning_orders", "returning_net_sales", "returning_average_order_value", "returning_cost_of_goods_sold", "returning_gross_profit", "new_customers", "new_orders", "new_net_sales", "new_average_order_value", "new_cost_of_goods_sold", "new_gross_profit", "unknown_customers", "unknown_orders", "unknown_net_sales", "unknown_average_order_value", "unknown_cost_of_goods_sold", "unknown_gross_profit"}, 
+        {"returning_customers", "returning_orders", "returning_net_sales", "returning_average_order_value", "returning_cost_of_goods_sold", "returning_gross_profit", "new_customers", "new_orders", "new_net_sales", "new_average_order_value", "new_cost_of_goods_sold", "new_gross_profit", "unknown_customers", "unknown_orders", "unknown_net_sales", "unknown_average_order_value", "unknown_cost_of_goods_sold", "unknown_gross_profit"}),
+
+    // 3. UNIÓN CON VENTAS POR FUENTE (CANALES)
+    JoinSalesBySource = Table.NestedJoin(ExpandNewReturning, {"month"}, SalesBySourceToColsMonthly, {"month"}, "SalesBySourceToCols", JoinKind.LeftOuter),
+    ExpandSalesBySource = Table.ExpandTableColumn(JoinSalesBySource, "SalesBySourceToCols", {"Rappi_net_sales", "Rappi_orders", "Rappi_average_order_value", "Rappi_cost_of_goods_sold", "Online Store_net_sales", "Online Store_orders", "Online Store_average_order_value", "Online Store_cost_of_goods_sold", "Tienda 81_net_sales", "Tienda 81_orders", "Tienda 81_average_order_value", "Tienda 81_cost_of_goods_sold", "Corporativo no tienda_net_sales", "Corporativo no tienda_orders", "Corporativo no tienda_average_order_value", "Corporativo no tienda_cost_of_goods_sold", "Feria_net_sales", "Feria_orders", "Feria_average_order_value", "Feria_cost_of_goods_sold"}, {"Rappi_net_sales", "Rappi_orders", "Rappi_average_order_value", "Rappi_cost_of_goods_sold", "Online Store_net_sales", "Online Store_orders", "Online Store_average_order_value", "Online Store_cost_of_goods_sold", "Tienda 81_net_sales", "Tienda 81_orders", "Tienda 81_average_order_value", "Tienda 81_cost_of_goods_sold", "Corporativo no tienda_net_sales", "Corporativo no tienda_orders", "Corporativo no tienda_average_order_value", "Corporativo no tienda_cost_of_goods_sold", "Feria_net_sales", "Feria_orders", "Feria_average_order_value", "Feria_cost_of_goods_sold"}),
+
+    // 4. UNIÓN CON TASA DE CONVERSIÓN POR REFERIDO
+    JoinConversionRate = Table.NestedJoin(ExpandSalesBySource, {"month"}, ConversionRateToColsMonthly, {"month"}, "ConversionRateByReferral", JoinKind.LeftOuter),
+    ExpandConversionRate = Table.ExpandTableColumn(JoinConversionRate, "ConversionRateByReferral", 
+        {"unknown_sessions", "unknown_sessions_that_completed_checkout", "unknown_conversion_rate", "social_sessions", "social_sessions_that_completed_checkout", "social_conversion_rate", "search_sessions", "search_sessions_that_completed_checkout", "search_conversion_rate", "paid_sessions", "paid_sessions_that_completed_checkout", "paid_conversion_rate", "direct_sessions", "direct_sessions_that_completed_checkout", "direct_conversion_rate", "Total site_sessions", "Total site_sessions_that_completed_checkout", "Total site_conversion_rate", "email_sessions", "email_sessions_that_completed_checkout", "email_conversion_rate"}, 
+        {"unknown_sessions", "unknown_sessions_that_completed_checkout", "unknown_conversion_rate", "social_sessions", "social_sessions_that_completed_checkout", "social_conversion_rate", "search_sessions", "search_sessions_that_completed_checkout", "search_conversion_rate", "paid_sessions", "paid_sessions_that_completed_checkout", "paid_conversion_rate", "direct_sessions", "direct_sessions_that_completed_checkout", "direct_conversion_rate", "Total site_sessions", "Total site_sessions_that_completed_checkout", "Total site_conversion_rate", "email_sessions", "email_sessions_that_completed_checkout", "email_conversion_rate"}),
+
+    // 5. UNIÓN CON GOOGLE ADS (AJUSTADO A 'MONTH')
+    JoinGoogleAds = Table.NestedJoin(ExpandConversionRate, {"month"}, GoogleAdsOperationMonthly, {"month"}, "GoogleAdsOperation", JoinKind.LeftOuter),
+    ExpandGoogleAds = Table.ExpandTableColumn(JoinGoogleAds, "GoogleAdsOperation", {"Cost", "Impressions", "Clicks"}, {"GoogleAdsOperation.Cost", "GoogleAdsOperation.Impressions", "GoogleAdsOperation.Clicks"}),
+
+    // 6. UNIÓN CON META ADS (AJUSTADO A 'MONTH')
+    JoinMetaAds = Table.NestedJoin(ExpandGoogleAds, {"month"}, MetaAdsOperationMonthly, {"month"}, "MetaAdsOperation", JoinKind.LeftOuter),
+    AggregateMetaAds = Table.AggregateTableColumn(JoinMetaAds, "MetaAdsOperation", {
+        {"spend", List.Sum, "MetaAdsOperation.spend"}, 
+        {"clicks", List.Sum, "MetaAdsOperation.clicks"}, 
+        {"impressions", List.Sum, "MetaAdsOperation.impressions"}
+    }),
+
+    // 7. ASIGNACIÓN DE TIPOS FINALES
+    ValidatedTypes = Table.TransformColumnTypes(AggregateMetaAds,{
+        {"MetaAdsOperation.spend", type number}, 
+        {"MetaAdsOperation.clicks", Int64.Type}, 
+        {"MetaAdsOperation.impressions", Int64.Type}
+    })
+in
+    ValidatedTypes

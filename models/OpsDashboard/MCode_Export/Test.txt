@@ -1,0 +1,4 @@
+let
+    Source = fnTest(ParamFechaInicioReporte, ParamFechaFinReporte, ParamFechaRefrescarHistorico, "week", ParamDiaSemanaReporte, ParamNombreTablaHistMensual)
+in
+    Source

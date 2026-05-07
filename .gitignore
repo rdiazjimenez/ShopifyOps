@@ -1,5 +1,7 @@
 # Archivo generado (contiene credenciales en la hoja Parámetros)
-ShopifyExport.xlsx
+models/ShopifyExport.xlsx
+models/ShopifyOpsDashboard.xlsx
+models/ESCModeloMAC.xlsx
 
 # Python
 __pycache__/

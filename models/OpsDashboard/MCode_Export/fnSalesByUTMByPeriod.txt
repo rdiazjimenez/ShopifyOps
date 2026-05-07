@@ -1,0 +1,112 @@
+let
+    FuncLogic = (
+        GroupByFieldInput as text, 
+        FechaInicio as datetime, 
+        FechaFin as datetime, 
+        FechaRefresco as datetime, 
+        optional NombreTablaHistorica as text
+    ) as table =>
+    let
+        SourceTable = "sales",
+        ColumnsToShow = "total_sales",
+        WhereFilter = "order_utm_campaign IS NOT NULL",
+        ShopifyGroup = GroupByFieldInput & ", order_utm_campaign, order_referrer_source, order_utm_source",
+
+        Periods = fnGetDatesInPeriod(FechaInicio, FechaFin, FechaRefresco, GroupByFieldInput, NombreTablaHistorica),
+
+        PreparedQueries = Table.AddColumn(Periods, "CustomQuery", each 
+            "FROM " & SourceTable & " " & 
+            "SHOW " & ColumnsToShow & " " & 
+            "GROUP BY " & ShopifyGroup & " " & 
+            "WHERE " & WhereFilter & " " & 
+            "SINCE " & Date.ToText([startDate], "yyyy-MM-dd") & " " & 
+            "UNTIL " & Date.ToText([endDate], "yyyy-MM-dd")
+        , type text),
+
+        InvokeAPI = Table.AddColumn(PreparedQueries, "Data", each try fnGetShopifyQLData([CustomQuery]) otherwise null),
+
+        ValidData = Table.SelectRows(InvokeAPI, each 
+            let 
+                val = [Data],
+                isNotVoid = val <> null and not (val is text and val = "")
+            in 
+                try isNotVoid otherwise false
+        ),
+
+        ExpandedResults = if Table.IsEmpty(ValidData) then 
+            #table({GroupByFieldInput, "order_utm_campaign", "order_referrer_source", "order_utm_source", "total_sales"}, {})
+        else 
+            let
+                ExpandedList = Table.ExpandListColumn(ValidData, "Data"),
+                ColumnNames = List.Transform(Text.Split(ShopifyGroup & ", " & ColumnsToShow, ","), Text.Trim),
+                Expanded = Table.ExpandRecordColumn(ExpandedList, "Data", ColumnNames)
+            in
+                Expanded,
+
+        // --- CORRECCIÓN CRÍTICA: TIPADO DE SALES ANTES DE CUALQUER OTRA OPERACIÓN ---
+        CleanSalesStep = Table.TransformColumns(ExpandedResults, {
+            {"total_sales", each if _ = null or _ = "" then 0 else Number.From(_, "en-US"), type number}
+        }),
+
+        CleanNulls = Table.ReplaceValue(CleanSalesStep, null, "sin identificar", Replacer.ReplaceValue, {GroupByFieldInput, "order_utm_campaign", "order_referrer_source", "order_utm_source"}),
+
+        TransformPeriod = Table.TransformColumns(CleanNulls, {
+            {GroupByFieldInput, each 
+                let 
+                    txt = Text.From(_),
+                    isYearMonth = Text.Length(txt) <= 7 and Text.Contains(txt, "-") and txt <> "sin identificar",
+                    res = if GroupByFieldInput = "month" and isYearMonth then txt & "-01" else txt
+                in res, 
+            type text}
+        }),
+
+        FixInvalidDates = Table.ReplaceValue(TransformPeriod, "sin identificar", null, Replacer.ReplaceValue, {GroupByFieldInput}),
+        FinalPeriodStep = Table.TransformColumnTypes(FixInvalidDates, { {GroupByFieldInput, type date} }),
+
+        // --- PIVOTAR ASEGURANDO QUE TRABAJAMOS CON NÚMEROS ---
+        PivotedColumns = if Table.IsEmpty(FinalPeriodStep) then FinalPeriodStep else 
+            let
+                RawNames = List.Distinct(FinalPeriodStep[order_utm_source]),
+                CleanNames = List.Select(RawNames, each _ <> null and _ <> "" and _ <> "sin identificar")
+            in
+                Table.Pivot(FinalPeriodStep, CleanNames, "order_utm_source", "total_sales", List.Sum),
+
+        // --- SUMA DINÁMICA CORREGIDA: Filtra solo valores numéricos ---
+        TechnicalCols = {GroupByFieldInput, "order_utm_campaign", "order_referrer_source", "startDate", "endDate", "CustomQuery", "Data", "refresh_date", "Total_Sales_Combined"},
+        ExistingCols = Table.ColumnNames(PivotedColumns),
+        MetricsToSum = List.Select(ExistingCols, each not List.Contains(TechnicalCols, _)),
+        
+        AddTotal = Table.AddColumn(PivotedColumns, "Total_Sales_Combined", each 
+            let 
+                currentRecord = _,
+                // Solo sumamos los campos que están en MetricsToSum y que son efectivamente números
+                valuesList = Record.ToList(Record.SelectFields(currentRecord, MetricsToSum)),
+                cleanValues = List.Select(valuesList, each _ is number)
+            in 
+                List.Sum(cleanValues), type number),
+
+        UpdateColumn = Table.AddColumn(AddTotal, "refresh_date", each DateTime.LocalNow(), type datetime),
+        
+        TargetCols = List.Combine({{GroupByFieldInput, "order_utm_campaign", "order_referrer_source", "Total_Sales_Combined", "refresh_date"}, MetricsToSum}),
+        FinalExistingCols = List.Select(TargetCols, each List.Contains(Table.ColumnNames(UpdateColumn), _)),
+        
+        RemovedSystemCols = Table.SelectColumns(UpdateColumn, FinalExistingCols),
+        SortedRows = Table.Sort(RemovedSystemCols, {{GroupByFieldInput, Order.Ascending}})
+    in
+        SortedRows,
+
+    TypeFunction = type function (
+        GroupByFieldInput as (type text meta [
+            Documentation.FieldCaption = "Nivel de Agrupación",
+            Documentation.AllowedValues = {"day", "month"}
+        ]),
+        FechaInicio as (type datetime),
+        FechaFin as (type datetime),
+        FechaRefresco as (type datetime),
+        optional NombreTablaHistorica as (type text)
+    ) as table meta [
+        Documentation.Name = "fnSalesByUTMByPeriod",
+        Documentation.LongDescription = "Consulta de ventas por UTM. Versión con tipado numérico forzado para evitar errores de suma en el pivot."
+    ]
+in
+    Value.ReplaceType(FuncLogic, TypeFunction)

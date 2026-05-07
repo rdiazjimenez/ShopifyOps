@@ -1,0 +1,118 @@
+let
+    // 1. DEFINICIÓN DE METADATOS PARA EL PANEL
+    fnType = type function (
+        GroupByField as (type text meta [
+            Documentation.FieldCaption = "Nivel de Agrupación",
+            Documentation.AllowedValues = {"day", "week", "month"},
+            Documentation.LongDescription = "Selecciona la granularidad. 'week' usa agrupación local basada en días para evitar desajustes con el calendario de Shopify."
+        ]),
+        FechaInicio as (type datetime meta [Documentation.FieldCaption = "Fecha Inicial"]),
+        FechaFin as (type datetime meta [Documentation.FieldCaption = "Fecha Final"]),
+        FechaRefresco as (type datetime meta [Documentation.FieldCaption = "Fecha Refrescar Histórico"]),
+        optional NombreTablaHistorica as (type text meta [Documentation.FieldCaption = "Nombre Tabla Excel (Opcional)"])
+    ) as table meta [
+        Documentation.Name = "fnGetSalesByTimeAndChannel",
+        Documentation.LongDescription = "Obtiene ventas desglosadas por canal (metafield origen_venta) y tiempo. #(cr,lf)En el caso de 'week', solicita datos por 'day' y los consolida localmente para respetar el día ancla personalizado.",
+        Documentation.Examples = {[
+            Description = "Obtener ventas por canal nivel semanal",
+            Code = "fnGetSalesByTimeAndChannel(""week"", #datetime(2026,1,1,0,0,0), #datetime(2026,3,1,0,0,0), #datetime(2026,2,1,0,0,0))",
+            Result = "Tabla con métricas agrupadas por canal y tus semanas personalizadas."
+        ]}
+    ],
+
+    // 2. LÓGICA INTERNA DE LA FUNCIÓN
+    FuncLogic = (
+        GroupByField as text, 
+        FechaInicio as datetime, 
+        FechaFin as datetime, 
+        FechaRefresco as datetime, 
+        optional NombreTablaHistorica as text
+    ) as table =>
+    let
+        SourceTable = "sales",
+        ColumnsToShow = "net_sales, orders, average_order_value, cost_of_goods_sold, gross_profit",
+        
+        // APRENDIZAJE: Si es week, pedimos 'day' para agrupar nosotros
+        ApiTimeGroup = if GroupByField = "week" then "day" else GroupByField,
+        FullGroupBy = ApiTimeGroup & ", order.metafields.custom.origen_venta",
+
+        // Invocación de periodos (Usa ParamDiaSemanaReporte global)
+        Periods = fnGetDatesInPeriod(FechaInicio, FechaFin, FechaRefresco, GroupByField, ParamDiaSemanaReporte, NombreTablaHistorica),
+
+        PreparedQueries = Table.AddColumn(Periods, "CustomQuery", each 
+            "FROM " & SourceTable & " " & 
+            "SHOW " & ColumnsToShow & " " & 
+            "GROUP BY " & FullGroupBy & " " & 
+            "SINCE " & Date.ToText([startDate], "yyyy-MM-dd") & " " & 
+            "UNTIL " & Date.ToText([endDate], "yyyy-MM-dd") & " " &
+            "ORDER BY " & ApiTimeGroup & " ASC"
+        , type text),
+
+        InvokeAPI = Table.AddColumn(PreparedQueries, "Data", each fnGetShopifyQLData([CustomQuery])),
+        ValidData = Table.SelectRows(InvokeAPI, each [Data] <> null and [Data] <> ""),
+
+        ResultTable = if Table.IsEmpty(ValidData) then 
+            #table({GroupByField, "channel", "net_sales", "orders", "average_order_value", "cost_of_goods_sold", "gross_profit"}, {})
+        else
+            let
+                ExpandedDataList = Table.ExpandListColumn(ValidData, "Data"),
+                
+                // Expansión dinámica
+                OriginalColumns = List.Transform(Text.Split(FullGroupBy & ", " & ColumnsToShow, ","), Text.Trim),
+                ExpandedResults = Table.ExpandRecordColumn(ExpandedDataList, "Data", OriginalColumns),
+
+                // Corrección de Metafield y Canal
+                CleanMetafields = Table.TransformColumns(ExpandedResults, {
+                    {"order.metafields.custom.origen_venta", each if _ is list then Text.From(_{0}?) else Text.From(_)}
+                }),
+                Renamed = Table.RenameColumns(CleanMetafields, {{"order.metafields.custom.origen_venta", "channel"}}),
+                FillChannel = Table.ReplaceValue(Renamed, null, "Online Store", Replacer.ReplaceValue, {"channel"}),
+
+                // Tipado numérico preventivo para consolidación
+                MetricList = List.Transform(Text.Split(ColumnsToShow, ","), Text.Trim),
+                PreTyped = Table.TransformColumnTypes(FillChannel, List.Transform(MetricList, each {_, type number})),
+
+                // --- LÓGICA DE CONSOLIDACIÓN LOCAL PARA WEEK ---
+                ConsolidatedData = if GroupByField = "week" then
+                    Table.Group(PreTyped, {"startDate", "endDate", "channel"}, 
+                        List.Transform(MetricList, (col) => {col, each List.Sum(Table.Column(_, col)), type number})
+                    )
+                else FillChannel,
+
+                // Tratamiento de fechas para salida
+                TransformDate = Table.TransformColumns(ConsolidatedData, {
+                    {if GroupByField = "week" then "startDate" else GroupByField, each 
+                        if GroupByField = "month" and Text.Length(Text.From(_)) <= 7 
+                        then Text.From(_) & "-01" 
+                        else Text.From(_), 
+                    type text}
+                }),
+
+                // Ajuste de nombres de columna si es week
+                FinalStructure = if GroupByField = "week" then 
+                        let 
+                            Rename = Table.RenameColumns(TransformDate, {{"startDate", "week"}}),
+                            RemoveEnd = Table.RemoveColumns(Rename, {"endDate"})
+                        in RemoveEnd
+                    else 
+                        Table.RemoveColumns(TransformDate, {"startDate", "endDate", "CustomQuery"})
+            in
+                FinalStructure,
+
+        // 9. TIPOS DE DATOS FINALES
+        AllColumns = Table.ColumnNames(ResultTable),
+        TypedTable = List.Accumulate(AllColumns, ResultTable, (state, current) =>
+            if current = GroupByField then Table.TransformColumnTypes(state, {{current, type date}})
+            else if current = "channel" then Table.TransformColumnTypes(state, {{current, type text}})
+            else if current = "orders" then Table.TransformColumnTypes(state, {{current, Int64.Type}})
+            else if List.Contains({"net_sales", "average_order_value", "cost_of_goods_sold", "gross_profit"}, current) 
+                 then Table.TransformColumnTypes(state, {{current, type number}})
+            else state
+        ),
+        
+        SortedRows = Table.Sort(TypedTable, {{GroupByField, Order.Ascending}}),
+        AddedUpdateColumn = Table.AddColumn(SortedRows, "refresh_date", each DateTime.LocalNow(), type datetime)
+    in
+        AddedUpdateColumn
+in
+    Value.ReplaceType(FuncLogic, fnType)

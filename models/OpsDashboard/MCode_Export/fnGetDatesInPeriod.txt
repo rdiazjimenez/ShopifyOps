@@ -1,0 +1,121 @@
+let
+    FuncLogic = (
+        FechaInicioReporte as datetime, 
+        FechaFinReporte as datetime, 
+        FechaRefrescoReporte as datetime, 
+        Tipo as text, 
+        ParamDiaSemanaReporte as number,
+        optional NombreTablaHistorica as text
+    ) as table =>
+    let
+        // Conversión de tipos datetime a date para comparaciones precisas
+        FechaInicio = Date.From(FechaInicioReporte),
+        FechaFin = Date.From(FechaFinReporte),
+        FechaRefresco = Date.From(FechaRefrescoReporte),
+
+        // 1. GENERACIÓN DE LA LISTA BASE SEGÚN EL TIPO
+        ListaPeriodos = if Tipo = "day" then 
+                List.Dates(FechaInicio, Duration.Days(FechaFin - FechaInicio) + 1, #duration(1, 0, 0, 0))
+            else if Tipo = "week" then
+                let
+                    DiaActual = Date.DayOfWeek(FechaInicio, Day.Sunday),
+                    // Ajuste para alinear con lógica de días en Excel (Viernes = 5)
+                    Diferencia = Number.Mod(DiaActual - ParamDiaSemanaReporte + 7, 7),
+                    PrimerDiaSemana = Date.AddDays(FechaInicio, -Diferencia)
+                in
+                    List.Generate(() => PrimerDiaSemana, each _ <= FechaFin, each Date.AddDays(_, 7))
+            else 
+                let
+                    Cant = ((Date.Year(FechaFin) - Date.Year(FechaInicio)) * 12) + (Date.Month(FechaFin) - Date.Month(FechaInicio)),
+                    Meses = List.Transform({0..Cant}, each Date.StartOfMonth(Date.AddMonths(FechaInicio, _)))
+                in Meses,
+
+        // 2. TABLA BASE E ÍNDICE DE CONTINUIDAD
+        TablaBase = Table.FromList(ListaPeriodos, Splitter.SplitByNothing(), {Tipo}),
+        TypedBase = Table.TransformColumnTypes(TablaBase, {{Tipo, type date}}),
+        AddOriginalIndex = Table.AddIndexColumn(TypedBase, "OriginalIndex", 0, 1),
+
+        // 3. FILTRADO CON VALIDACIÓN DE REFRESH (Lógica Incremental)
+        Filtrado = if NombreTablaHistorica = null or NombreTablaHistorica = "" then AddOriginalIndex
+            else
+                let
+                    Acceso = try Excel.CurrentWorkbook(){[Name=NombreTablaHistorica]}[Content] otherwise null,
+                    ColOk = if Acceso <> null then Table.HasColumns(Acceso, {Tipo}) else false,
+                    Result = if ColOk then
+                        let
+                            // Buffer en memoria para optimizar la búsqueda contra el histórico
+                            Existentes = List.Buffer(Table.Column(Table.TransformColumnTypes(Acceso, {{Tipo, type date}}), Tipo)),
+                            // Se mantiene el periodo si: no está en el histórico O es posterior a la fecha de refresco
+                            Filtro = Table.SelectRows(AddOriginalIndex, each 
+                                not List.Contains(Existentes, Record.Field(_, Tipo)) or 
+                                Record.Field(_, Tipo) >= FechaRefresco
+                            )
+                        in Filtro
+                    else AddOriginalIndex
+                in Result,
+
+        // 4. LÓGICA CONDICIONAL DE SALIDA (Semana Desglosada vs Otros Agrupados)
+        Sorted = Table.Sort(Filtrado, {{Tipo, Order.Ascending}}),
+        
+        ResultadoFinal = if Tipo = "week" then
+            let
+                // Las semanas se entregan fila por fila para precisión en ShopifyQL
+                Individual = Table.AddColumn(Sorted, "startDate", each Record.Field(_, Tipo), type date),
+                EndDates = Table.AddColumn(Individual, "endDate", each Date.AddDays([startDate], 6), type date)
+            in
+                Table.SelectColumns(EndDates, {"startDate", "endDate"})
+        else
+            let
+                // Gaps and Islands: Agrupa periodos consecutivos para minimizar llamadas API
+                AddGroupIndex = Table.AddIndexColumn(Sorted, "GroupIndex", 0, 1),
+                GroupId = Table.AddColumn(AddGroupIndex, "GroupId", each [OriginalIndex] - [GroupIndex]),
+                Aggregated = Table.Group(GroupId, {"GroupId"}, {
+                    {"startDate", each List.Min(Table.Column(_, Tipo)), type date},
+                    {"endDate", each 
+                        if Tipo = "day" then List.Max(Table.Column(_, Tipo)) 
+                        else Date.EndOfMonth(List.Max(Table.Column(_, Tipo))), type date}
+                })
+            in
+                Table.RemoveColumns(Aggregated, {"GroupId"})
+    in
+        ResultadoFinal,
+
+    // DOCUMENTACIÓN DE LA FUNCIÓN (METADATOS)
+    fnType = type function (
+        FechaInicioReporte as (type datetime meta [
+            Documentation.FieldCaption = "Fecha Inicio Reporte",
+            Documentation.SampleValues = {"2025-01-01T00:00:00"}
+        ]),
+        FechaFinReporte as (type datetime meta [
+            Documentation.FieldCaption = "Fecha Fin Reporte",
+            Documentation.SampleValues = {"2025-12-31T23:59:59"}
+        ]),
+        FechaRefrescoReporte as (type datetime meta [
+            Documentation.FieldCaption = "Fecha Refresco Histórico",
+            Documentation.LongDescription = "Cualquier registro igual o posterior a esta fecha será regenerado."
+        ]),
+        Tipo as (type text meta [
+            Documentation.FieldCaption = "Nivel de Agrupación",
+            Documentation.AllowedValues = {"day", "week", "month"}
+        ]),
+        ParamDiaSemanaReporte as (type number meta [
+            Documentation.FieldCaption = "Día Ancla (Excel)",
+            Documentation.LongDescription = "Número del día de la semana para anclar reportes de tipo 'week'. Ejemplo: 5 para Viernes."
+        ]),
+        optional NombreTablaHistorica as (type text meta [
+            Documentation.FieldCaption = "Nombre Tabla Excel Histórica",
+            Documentation.LongDescription = "Nombre de la tabla de destino en el libro actual para realizar carga incremental."
+        ])
+    ) as table meta [
+        Documentation.Name = "fnGetDatesInPeriod",
+        Documentation.LongDescription = "Genera rangos de fechas optimizados para la API de Shopify. Agrupa días y meses consecutivos para reducir llamadas, pero mantiene semanas desglosadas individualmente.",
+        Documentation.Examples = {
+            [
+                Description = "Generar semanas de 7 días ancladas a Viernes",
+                Code = "fnGetDatesInPeriod(#datetime(2025,11,1,0,0,0), #datetime(2026,5,8,0,0,0), #datetime(2026,4,1,0,0,0), ""week"", 5)",
+                Result = "Tabla con columnas startDate y endDate desglosadas por semana."
+            ]
+        }
+    ]
+in
+    Value.ReplaceType(FuncLogic, fnType)
