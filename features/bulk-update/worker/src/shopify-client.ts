@@ -29,11 +29,14 @@ export class ShopifyClient {
   private readonly headers: Record<string, string>;
   private readonly fetchFn: typeof fetch;
 
-  constructor(storeDomain: string, accessToken: string, fetchFn: typeof fetch = fetch) {
-    this.endpoint = `https://${storeDomain}/admin/api/${API_VERSION}/graphql.json`;
+  constructor(storeDomain: string, accessToken: string, fetchFn: typeof fetch = fetch.bind(globalThis)) {
+    const hostname = normalizeStoreDomain(storeDomain);
+    this.endpoint = `https://${hostname}/admin/api/${API_VERSION}/graphql.json`;
+    console.log("[ShopifyClient] endpoint host:", hostname);
     this.headers = {
       "Content-Type": "application/json",
       "X-Shopify-Access-Token": accessToken,
+      "User-Agent": "ShopifyOps-BulkUpdate/1.0",
     };
     this.fetchFn = fetchFn;
   }
@@ -101,23 +104,81 @@ export class ShopifyClient {
   }
 
   private async graphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
-    const res = await this.fetchFn(this.endpoint, {
-      method: "POST",
-      headers: this.headers,
-      body: JSON.stringify({ query, variables }),
-    });
+    let res: Response;
+    try {
+      res = await this.fetchFn(this.endpoint, {
+        method: "POST",
+        headers: this.headers,
+        body: JSON.stringify({ query, variables }),
+        // bypass Cloudflare edge when calling Shopify (also CF-proxied)
+        // @ts-ignore — CF Workers-specific option
+        cf: { cacheTtl: 0, cacheEverything: false },
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("[ShopifyClient] fetch error:", msg);
+      throw new ShopifyClientError(`Shopify fetch error: ${msg}`);
+    }
 
     if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      console.error("[ShopifyClient] HTTP error:", res.status, body.slice(0, 200));
       throw new ShopifyClientError(`Shopify API error: ${res.status} ${res.statusText}`);
     }
 
-    const json = (await res.json()) as { data: T; errors?: unknown[] };
-    if (json.errors?.length) {
+    let json: { data: T | null; errors?: unknown[] };
+    try {
+      json = await res.json() as { data: T | null; errors?: unknown[] };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("[ShopifyClient] JSON parse error:", msg);
+      throw new ShopifyClientError(`Shopify response parse error: ${msg}`);
+    }
+
+    if (json.errors && Array.isArray(json.errors) && json.errors.length > 0) {
+      console.error("[ShopifyClient] GraphQL errors:", JSON.stringify(json.errors));
       throw new ShopifyClientError(`Shopify GraphQL errors: ${JSON.stringify(json.errors)}`);
+    }
+
+    if (json.data === null || json.data === undefined) {
+      console.error("[ShopifyClient] null data, full response:", JSON.stringify(json));
+      throw new ShopifyClientError(`Shopify returned null data`);
     }
 
     return json.data;
   }
+}
+
+function normalizeStoreDomain(storeDomain: string): string {
+  const raw = storeDomain.trim();
+  if (!raw) throw new ShopifyClientError("SHOPIFY_STORE_DOMAIN is empty");
+
+  let hostname = raw;
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      hostname = new URL(raw).hostname;
+    } catch {
+      throw new ShopifyClientError("SHOPIFY_STORE_DOMAIN is not a valid URL");
+    }
+  } else {
+    hostname = raw.split("/")[0] ?? "";
+  }
+
+  hostname = hostname.trim().toLowerCase().replace(/\.$/, "");
+
+  if (!hostname) throw new ShopifyClientError("SHOPIFY_STORE_DOMAIN is empty");
+  if (isIpAddress(hostname)) {
+    throw new ShopifyClientError("SHOPIFY_STORE_DOMAIN must be a myshopify.com hostname, not an IP address");
+  }
+  if (!hostname.endsWith(".myshopify.com")) {
+    throw new ShopifyClientError("SHOPIFY_STORE_DOMAIN must be a myshopify.com hostname");
+  }
+
+  return hostname;
+}
+
+function isIpAddress(hostname: string): boolean {
+  return /^\d{1,3}(\.\d{1,3}){3}$/.test(hostname) || hostname.includes(":");
 }
 
 function normalizeVariantGid(id: string): string {

@@ -14,6 +14,24 @@ Cloudflare Worker that accepts an Excel workbook upload and applies bulk price/c
 npm install
 ```
 
+### Generate Shopify Admin API access token
+
+1. Shopify Admin → **Settings** → **Apps and sales channels**
+2. Click **Develop apps** (top right)
+3. First time only: click **Allow custom app development** → confirm
+4. Click **Create an app** — name it e.g. `ShopifyOps Bulk Update`
+5. Click **Configure Admin API scopes**, enable:
+   - `write_products`
+   - `read_products`
+   - `read_inventory`
+6. Click **Save**
+7. Go to **API credentials** tab → click **Install app** → **Install**
+8. Click **Reveal token once** — copy immediately, shown only once
+
+Token format: `shpat_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`
+
+> Rotate manually if compromised. Scope changes require re-installing the app.
+
 ### Set secrets
 
 ```bash
@@ -21,7 +39,7 @@ wrangler secret put SHOPIFY_ACCESS_TOKEN
 # paste your Shopify Admin API access token when prompted
 
 wrangler secret put SHOPIFY_STORE_DOMAIN
-# paste your store domain, e.g. your-store.myshopify.com
+# paste hostname only, e.g. your-store.myshopify.com (no https://)
 
 wrangler secret put API_KEY
 # paste a strong random secret — this is the shared key Activepieces will send
@@ -33,6 +51,14 @@ X-Api-Key: <your API_KEY value>
 ```
 
 ## Development
+
+Copy the example vars file and fill in real values:
+
+```bash
+cp .dev.vars.example .dev.vars
+```
+
+`.dev.vars` is gitignored. Wrangler injects these as secrets during `npm run dev`.
 
 ```bash
 npm run dev

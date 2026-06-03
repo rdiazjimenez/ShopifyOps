@@ -10,6 +10,36 @@ function makeClient(fetchFn: typeof fetch) {
   return new ShopifyClient(STORE_DOMAIN, ACCESS_TOKEN, fetchFn);
 }
 
+describe("ShopifyClient endpoint", () => {
+  it("normalizes a full myshopify URL secret to hostname", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ data: { productVariant: { product: { id: PRODUCT_GID } } } }),
+        { headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    const client = new ShopifyClient(`https://${STORE_DOMAIN}/admin`, ACCESS_TOKEN, fetchFn);
+    await client.resolveVariantToProductId(VARIANT_GID);
+
+    expect(fetchFn.mock.calls[0][0]).toBe(
+      `https://${STORE_DOMAIN}/admin/api/2025-04/graphql.json`
+    );
+  });
+
+  it("rejects IP address store domains because Shopify returns Cloudflare 1003", () => {
+    expect(
+      () => new ShopifyClient("23.227.38.74", ACCESS_TOKEN, vi.fn() as unknown as typeof fetch)
+    ).toThrow("SHOPIFY_STORE_DOMAIN must be a myshopify.com hostname, not an IP address");
+  });
+
+  it("rejects non-myshopify hostnames", () => {
+    expect(
+      () => new ShopifyClient("example.com", ACCESS_TOKEN, vi.fn() as unknown as typeof fetch)
+    ).toThrow("SHOPIFY_STORE_DOMAIN must be a myshopify.com hostname");
+  });
+});
+
 describe("ShopifyClient.updateVariants", () => {
   it("sends price, compareAtPrice, cost in single mutation", async () => {
     const fetchFn = vi.fn().mockResolvedValue(
