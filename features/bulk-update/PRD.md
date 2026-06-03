@@ -71,7 +71,13 @@ No Excel knowledge. No separate `inventoryItemUpdate` mutation.
 Cost is updated via `inventoryItem { cost }` nested inside `productVariantsBulkUpdate` — not via a separate `inventoryItemUpdate` call. This keeps price and cost in one mutation per product group, reducing API calls. Confirmed against Shopify `ProductVariantsBulkInput` schema which exposes `inventoryItem.cost`.
 
 ### Partial Update Behavior
-When a product group has multiple variants and Shopify returns `userErrors`, all variants in that group are marked failed. Shopify's `productVariantsBulkUpdate` is atomic per call — if the mutation itself fails or returns userErrors, no partial success is guaranteed. Individual variant resolution errors (lookup failure before mutation) do not affect other variants or other product groups.
+
+**Decision: Option A — group-level failure (current implementation).**
+
+When a product group has multiple variants and Shopify returns `userErrors`, all variants in that group are marked failed. Rationale: `productVariantsBulkUpdate` is atomic per call — no partial success is guaranteed. Treating the whole group as failed is safe and unambiguous. Individual variant resolution errors (lookup failure before mutation) do not affect other variants or other product groups.
+
+**Future option (not implemented): Option B — per-row error mapping.**
+Map `userErrors` back to individual variant rows using the field-path index (e.g. `["variants", "0", "price"]` → row at input index 0). This would give more precise Result Reports when only one variant in a product group has bad data. Requires verifying the `ProductUserError` schema fields (`field`, `message`, `code`) before implementing to confirm the index is stable and reliable. Deferred until a concrete merchant need arises.
 
 ### GID Normalization
 `Variant ID` from Matrixify may be numeric (`123456`) or a full GID (`gid://shopify/ProductVariant/123456`). Normalize to full GID before all API calls.

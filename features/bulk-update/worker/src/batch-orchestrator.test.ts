@@ -149,6 +149,28 @@ describe("runBatch — Result Report", () => {
     expect(report.failed).toBe(1);
     expect(report.rows.find((r) => r.status === "failed")?.reason).toContain("Price is invalid");
   });
+
+  it("group-level failure: all variants in product group marked failed when userErrors returned", async () => {
+    const client = makeClient({
+      resolveVariantToProductId: vi.fn().mockResolvedValue(PRODUCT_A),
+      updateVariants: vi.fn().mockResolvedValue({
+        productVariants: [],
+        userErrors: [{ field: ["variants", "0", "price"], message: "Price is invalid" }],
+      }),
+    });
+
+    const rows = [
+      { skipped: false as const, row: 1, command: "UPDATE" as const, variantId: VARIANT_1, price: "bad" },
+      { skipped: false as const, row: 2, command: "UPDATE" as const, variantId: VARIANT_2, price: "9.99" },
+    ];
+
+    const report = await runBatch(rows, client, false);
+    // Both variants in the same product group fail together — Option A semantics
+    expect(report.failed).toBe(2);
+    expect(report.succeeded).toBe(0);
+    expect(report.rows.every((r) => r.status === "failed")).toBe(true);
+    expect(client.updateVariants).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("runBatch — rows[] status per outcome", () => {
