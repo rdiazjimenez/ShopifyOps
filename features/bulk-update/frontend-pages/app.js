@@ -11,10 +11,14 @@
 /* ---- State ---- */
 /** @type {File|null} */
 let selectedFile = null;
+/** @type {ArrayBuffer|null} Buffer from last successful file read — cached to avoid double-read */
+let selectedBuffer = null;
 /** @type {object|null} Last successful ResultReport from the API */
 let lastReport = null;
-/** @type {ArrayBuffer|null} Raw bytes of the last uploaded file (for annotation) */
+/** @type {ArrayBuffer|null} Buffer snapshot taken at submit time (immutable reference to submitted file) */
 let lastFileBuffer = null;
+/** @type {string|null} Filename snapshot taken at submit time */
+let lastFileName = null;
 /** @type {string|null} Sheet name used in the last submission */
 let lastSheetName = null;
 
@@ -39,28 +43,34 @@ const downloadArea  = /** @type {HTMLElement}         */ (document.getElementByI
    1. File picker → parse sheets
    ========================================================= */
 fileInput.addEventListener("change", async () => {
+  // Reset mutable state immediately — any stale result no longer corresponds to this file.
+  selectedFile = null;
+  selectedBuffer = null;
+  hideSheetDropdown();
+  hideResult();
+  hideError();
+  submitBtn.disabled = true;
+
   const file = fileInput.files && fileInput.files[0];
-  if (!file) {
-    selectedFile = null;
-    hideSheetDropdown();
-    submitBtn.disabled = true;
-    return;
-  }
+  if (!file) return;
 
-  selectedFile = file;
-
+  let buffer;
   try {
-    const buffer = await file.arrayBuffer();
+    buffer = await file.arrayBuffer();
     const workbook = XLSX.read(buffer, { type: "array" });
+    if (workbook.SheetNames.length === 0) {
+      showError("Workbook has no sheets.");
+      return;
+    }
     populateSheets(workbook.SheetNames);
   } catch (err) {
     showError("Could not read workbook: " + (err.message || String(err)));
-    hideSheetDropdown();
-    submitBtn.disabled = true;
     return;
   }
 
-  hideError();
+  // Only set state after successful parse — keeps selectedFile/selectedBuffer in sync.
+  selectedFile = file;
+  selectedBuffer = buffer;
   submitBtn.disabled = false;
 });
 
@@ -85,10 +95,15 @@ function hideSheetDropdown() {
    ========================================================= */
 uploadForm.addEventListener("submit", async (e) => {
   e.preventDefault();
-  if (!selectedFile) return;
+  if (!selectedFile || !selectedBuffer) return;
 
-  const sheet   = sheetSelect.value;
-  const dryRun  = dryRunCheck.checked;
+  const sheet  = sheetSelect.value;
+  const dryRun = dryRunCheck.checked;
+
+  // Snapshot submitted-file identity before any async ops — user may pick a new file
+  // while the fetch is in flight, but the download must annotate the submitted file.
+  const submittedBuffer   = selectedBuffer;
+  const submittedFileName = selectedFile.name;
 
   hideError();
   hideResult();
@@ -131,11 +146,11 @@ uploadForm.addEventListener("submit", async (e) => {
     return;
   }
 
-  // Store state for annotated workbook download.
-  lastReport    = data;
-  lastSheetName = sheet;
-  // Re-read buffer asynchronously; download button guarded by lastFileBuffer check.
-  selectedFile.arrayBuffer().then((buf) => { lastFileBuffer = buf; });
+  // Commit snapshot — download will use these even if the user picks a new file.
+  lastReport     = data;
+  lastSheetName  = sheet;
+  lastFileBuffer = submittedBuffer;
+  lastFileName   = submittedFileName;
 
   showResult(data);
 });
@@ -162,17 +177,16 @@ function showResult(report) {
   });
 
   resultSection.hidden = false;
-
-  // Show download button once result is rendered.
   renderDownloadButton();
 }
 
 function hideResult() {
   resultSection.hidden = true;
   downloadArea.innerHTML = "";
-  lastReport = null;
+  lastReport     = null;
   lastFileBuffer = null;
-  lastSheetName = null;
+  lastSheetName  = null;
+  lastFileName   = null;
 }
 
 /* =========================================================
@@ -188,13 +202,8 @@ function renderDownloadButton() {
 }
 
 async function handleDownload() {
-  // Ensure buffer is ready (arrayBuffer() resolves quickly after submit).
-  if (!lastReport || !lastSheetName) return;
-
-  // If buffer isn't ready yet, wait briefly.
-  if (!lastFileBuffer) {
-    lastFileBuffer = await selectedFile.arrayBuffer();
-  }
+  // All four must be set — lastFileBuffer ensures the submitted file's bytes are ready.
+  if (!lastReport || !lastSheetName || !lastFileBuffer || !lastFileName) return;
 
   try {
     const workbook = XLSX.read(lastFileBuffer, { type: "array" });
@@ -212,15 +221,14 @@ async function handleDownload() {
 
     const statusColIdx = lastCol + 1;
     const reasonColIdx = lastCol + 2;
-    const headerRowIdx = range.s.r; // 0-based index of the header row
+    const headerRowIdx = range.s.r;
 
     setCellValue(ws, headerRowIdx, statusColIdx, "Status");
     setCellValue(ws, headerRowIdx, reasonColIdx, "Reason");
 
-    // Data rows start one below the header.
-    // API `row` is 1-based relative to the first data row (i.e. row 1 = headerRowIdx+1).
+    // API `row` is 1-based relative to the first data row (row 1 = headerRowIdx + 1).
     for (let r = range.s.r + 1; r <= range.e.r; r++) {
-      const apiRow = r - range.s.r; // 1-based
+      const apiRow = r - range.s.r;
       const result = rowMap[apiRow];
       if (result) {
         setCellValue(ws, r, statusColIdx, result.status);
@@ -228,7 +236,6 @@ async function handleDownload() {
       }
     }
 
-    // Expand sheet ref to cover new columns.
     range.e.c = reasonColIdx;
     ws["!ref"] = XLSX.utils.encode_range(range);
 
@@ -244,9 +251,8 @@ async function handleDownload() {
     XLSX.utils.book_append_sheet(workbook, resultWs, "Results");
 
     /* ---- Trigger browser download ---- */
-    const baseName = selectedFile
-      ? selectedFile.name.replace(/\.xlsx$/i, "")
-      : "workbook";
+    // Use filename captured at submit time — not selectedFile.name, which may have changed.
+    const baseName = lastFileName.replace(/\.xlsx$/i, "");
     XLSX.writeFile(workbook, `${baseName}_annotated.xlsx`);
   } catch (err) {
     showError("Failed to generate annotated workbook: " + (err.message || String(err)));
