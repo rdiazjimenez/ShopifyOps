@@ -1,4 +1,0 @@
-let
-    Source = fnSalesBySourceByPeriod("day", ParamFechaInicioReporte, ParamFechaFinReporte, ParamFechaRefrescarHistorico, ParamNombreTablaHistDiario)
-in
-    Source

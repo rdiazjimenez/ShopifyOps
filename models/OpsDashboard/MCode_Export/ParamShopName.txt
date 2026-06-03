@@ -1,5 +1,0 @@
-let
-    Source = Excel.CurrentWorkbook(){[Name="ParamShopName"]}[Content],
-    Column1 = Source{0}[Column1]
-in
-    Column1
