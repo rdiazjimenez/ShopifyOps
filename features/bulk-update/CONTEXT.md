@@ -12,13 +12,13 @@ A specific purchasable version of a Product (e.g. size/color combination). Carri
 The monetary value assigned to a Variant. Stored as a decimal string in Shopify (e.g. "19.99"). Includes `price` and `compareAtPrice`.
 
 ### Cost
-The cost of goods for a Variant. Stored on `InventoryItem.unitCost`. Updated via `inventoryItemUpdate` mutation, separate from price updates.
+The cost of goods for a Variant. Stored on `InventoryItem.unitCost`. Updated via the `inventoryItem.cost` field nested inside `productVariantsBulkUpdate` — no separate `inventoryItemUpdate` mutation. Requires `write_inventory` scope.
 
 ### Bulk Operation
 A user-initiated action that updates up to hundreds of Variant records in a single execution. Driven by data from an Excel Workbook. Scope: update-only (no create or delete). Rows are processed independently — a failed row is skipped and logged; remaining rows continue. Returns a Result Report.
 
 ### Result Report
-The response from a Bulk Operation. Contains: `total`, `succeeded`, `failed`, `skipped` counts, and `errors[]` (failed rows only, each with row number, lookup key, and reason). `total === succeeded + failed + skipped`.
+The response from a Bulk Operation. Contains: `total`, `succeeded`, `failed`, `skipped` counts, and `rows[]` — one entry per processed row with `row` number, `lookupKey`, `status` (`success` | `failed` | `skipped`), and `reason` (present on failed and skipped rows). `total === succeeded + failed + skipped`. The frontend uses `rows[]` to annotate the downloaded Excel Workbook.
 
 ### Dry Run
 Optional mode (`?dryRun=true`) where rows are validated and API calls are simulated but no mutations are sent to Shopify. Returns a Result Report showing what would have changed.
@@ -34,3 +34,20 @@ The identifier used to match an Excel row to a Shopify Variant. Variant ID takes
 
 ### Store Credentials
 Single Shopify store. Admin API token stored as Cloudflare Worker secret (`SHOPIFY_ACCESS_TOKEN`). Store domain stored as `SHOPIFY_STORE_DOMAIN`.
+
+### Frontend
+A UI layer that lets a user upload an Excel Workbook, select a sheet from a dropdown (populated client-side), toggle Dry Run, submit the Bulk Operation, view a Result Report (summary card + per-row table), and download an annotated copy of the workbook. Three flavors, each in its own directory under `features/bulk-update/`:
+
+| Directory | Flavor | Auth | CF Project |
+|---|---|---|---|
+| `worker/` | Headless — triggered via curl/HTTP | `X-Api-Key` header | `shopifyops-bulk-update` |
+| `frontend-pages/` | Cloudflare Pages + Cloudflare Access | Google SSO (single merchant) | `shopifyops-bulk-update-ui` |
+| `frontend-shopify-app/` | Shopify Admin embedded app | Shopify session token | — |
+
+Flavors share the same `worker/` backend. Developed independently; each merges to `main` when complete.
+
+### Pages Function
+A server-side Cloudflare Pages Function (`frontend-pages/functions/api/bulk-update.js`) that proxies requests from the frontend to the worker. Adds the `X-Api-Key` header from the `API_KEY` Pages secret. The worker URL is set via `WORKER_URL` environment variable on the Pages project. The `API_KEY` is never sent to the browser.
+
+### Annotated Workbook
+The downloaded output of a Bulk Operation via the Frontend. A copy of the uploaded Excel Workbook with two columns appended to the processed sheet (`Status`, `Reason`) and a new `Results` sheet containing the summary counts. Generated client-side from the Result Report.

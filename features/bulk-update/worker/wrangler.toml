@@ -12,5 +12,5 @@ compatibility_flags = ["nodejs_compat"]
 #   SHOPIFY_STORE_DOMAIN  — e.g. your-store.myshopify.com
 #   API_KEY               — shared secret; Activepieces sends as X-Api-Key header
 #
-# Shopify Admin API version: 2025-04 (pinned in src/shopify-client.ts)
-# Required Shopify scopes: write_products, read_products, read_inventory
+# Shopify Admin API version: 2026-04 (pinned in src/shopify-client.ts)
+# Required Shopify scopes: write_products, read_products, write_inventory, read_inventory

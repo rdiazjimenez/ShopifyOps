@@ -14,8 +14,8 @@ A discrete operational capability within ShopifyOps (e.g. Bulk Update). Each fea
 The runtime for ShopifyOps features. Each feature exposes an HTTP endpoint. TypeScript source compiled and deployed via Cloudflare Workers Builds (GitHub integration). Pushes to `main` auto-deploy. Wrangler used for local development only.
 
 ### Activepieces
-The automation platform used to trigger ShopifyOps features. Connects external events (file uploads, schedules, user actions) to Cloudflare Worker HTTP endpoints.
+The automation platform used to trigger ShopifyOps features. Connects external events (file uploads, schedules, user actions) to Cloudflare Worker HTTP endpoints. Not used for the Bulk Update flow — replaced by a dedicated Frontend.
 
 ## Features
 
-- [`features/bulk-update/`](features/bulk-update/CONTEXT.md) — Bulk update of Shopify Products, Variants, Prices, and Costs from an Excel Workbook.
+- [`features/bulk-update/`](features/bulk-update/CONTEXT.md) — Bulk update of Shopify Products, Variants, Prices, and Costs from an Excel Workbook. Three frontend flavors: headless worker, Cloudflare Pages + Access, Shopify Admin embedded app.

@@ -57,6 +57,21 @@ describe("runBatch — grouping", () => {
 });
 
 describe("runBatch — Result Report", () => {
+  it("rows length equals total", async () => {
+    const client = makeClient({
+      resolveVariantToProductId: vi.fn().mockResolvedValue(PRODUCT_A),
+    });
+
+    const rows = [
+      { skipped: false as const, row: 1, command: "UPDATE" as const, variantId: VARIANT_1, price: "9.99" },
+      { skipped: false as const, row: 2, command: "UPDATE" as const, variantId: VARIANT_2 }, // no-op
+      { skipped: true as const, row: 3, reason: "unsupported command: DELETE" },
+    ];
+
+    const report = await runBatch(rows, client, false);
+    expect(report.rows).toHaveLength(report.total);
+  });
+
   it("total equals succeeded + failed + skipped", async () => {
     const client = makeClient({
       resolveVariantToProductId: vi.fn().mockResolvedValue(PRODUCT_A),
@@ -73,7 +88,7 @@ describe("runBatch — Result Report", () => {
     expect(report.total).toBe(report.succeeded + report.failed + report.skipped);
   });
 
-  it("failed row appears in errors, not skipped count", async () => {
+  it("failed row appears in rows with status failed, not skipped count", async () => {
     const client = makeClient({
       resolveVariantToProductId: vi.fn().mockRejectedValue(new Error("Variant not found")),
     });
@@ -85,18 +100,19 @@ describe("runBatch — Result Report", () => {
     const report = await runBatch(rows, client, false);
     expect(report.failed).toBe(1);
     expect(report.skipped).toBe(0);
-    expect(report.errors).toHaveLength(1);
-    expect(report.errors[0]?.row).toBe(1);
+    expect(report.rows.filter((r) => r.status === "failed")).toHaveLength(1);
+    expect(report.rows.find((r) => r.status === "failed")?.row).toBe(1);
   });
 
-  it("skipped row increments skipped, does not appear in errors", async () => {
+  it("skipped row increments skipped, appears in rows with status skipped", async () => {
     const client = makeClient();
     const rows = [
       { skipped: true as const, row: 1, reason: "unsupported command: NEW" },
     ];
     const report = await runBatch(rows, client, false);
     expect(report.skipped).toBe(1);
-    expect(report.errors).toHaveLength(0);
+    expect(report.rows.filter((r) => r.status === "failed")).toHaveLength(0);
+    expect(report.rows.filter((r) => r.status === "skipped")).toHaveLength(1);
   });
 
   it("failed row does not abort remaining rows", async () => {
@@ -131,7 +147,46 @@ describe("runBatch — Result Report", () => {
 
     const report = await runBatch(rows, client, false);
     expect(report.failed).toBe(1);
-    expect(report.errors[0]?.reason).toContain("Price is invalid");
+    expect(report.rows.find((r) => r.status === "failed")?.reason).toContain("Price is invalid");
+  });
+});
+
+describe("runBatch — rows[] status per outcome", () => {
+  it("succeeded row has status success and no reason", async () => {
+    const client = makeClient({
+      resolveVariantToProductId: vi.fn().mockResolvedValue(PRODUCT_A),
+    });
+    const rows = [
+      { skipped: false as const, row: 1, command: "UPDATE" as const, variantId: VARIANT_1, price: "9.99" },
+    ];
+    const report = await runBatch(rows, client, false);
+    const r = report.rows.find((r) => r.row === 1)!;
+    expect(r.status).toBe("success");
+    expect(r.reason).toBeUndefined();
+  });
+
+  it("failed row has status failed and reason present", async () => {
+    const client = makeClient({
+      resolveVariantToProductId: vi.fn().mockRejectedValue(new Error("Variant not found")),
+    });
+    const rows = [
+      { skipped: false as const, row: 1, command: "UPDATE" as const, variantId: VARIANT_1, price: "9.99" },
+    ];
+    const report = await runBatch(rows, client, false);
+    const r = report.rows.find((r) => r.row === 1)!;
+    expect(r.status).toBe("failed");
+    expect(r.reason).toBeTruthy();
+  });
+
+  it("skipped row has status skipped and reason present", async () => {
+    const client = makeClient();
+    const rows = [
+      { skipped: true as const, row: 1, reason: "unsupported command: DELETE" },
+    ];
+    const report = await runBatch(rows, client, false);
+    const r = report.rows.find((r) => r.row === 1)!;
+    expect(r.status).toBe("skipped");
+    expect(r.reason).toBeTruthy();
   });
 });
 
@@ -165,6 +220,18 @@ describe("runBatch — dry run", () => {
     expect(report.succeeded).toBe(1);
     expect(report.skipped).toBe(1);
     expect(client.updateVariants).not.toHaveBeenCalled();
+  });
+
+  it("dry run pending rows appear as status success in rows[]", async () => {
+    const client = makeClient({
+      resolveVariantToProductId: vi.fn().mockResolvedValue(PRODUCT_A),
+    });
+    const rows = [
+      { skipped: false as const, row: 1, command: "UPDATE" as const, variantId: VARIANT_1, price: "9.99" },
+    ];
+    const report = await runBatch(rows, client, true);
+    const r = report.rows.find((r) => r.row === 1)!;
+    expect(r.status).toBe("success");
   });
 });
 
