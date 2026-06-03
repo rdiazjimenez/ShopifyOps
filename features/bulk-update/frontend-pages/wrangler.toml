@@ -1,0 +1,9 @@
+name = "shopifyops-bulk-update-ui"
+compatibility_date = "2025-06-01"
+
+# Local development:
+#   wrangler pages dev . --binding WORKER_URL=<url> --binding API_KEY=<key>
+#
+# Required Pages environment variables (set in Cloudflare dashboard or via wrangler):
+#   WORKER_URL  — deployed worker endpoint URL
+#   API_KEY     — shared secret (Pages secret, never exposed to browser)
