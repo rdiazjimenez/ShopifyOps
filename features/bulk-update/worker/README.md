@@ -73,9 +73,30 @@ curl -X POST http://localhost:8787/bulk-update
 
 ## Deploy
 
+Deployment is automated via Cloudflare Workers Builds connected to the `rdiazjimenez/ShopifyOps` GitHub repository.
+
+- Push to `main` → auto-deploys to production
+- Open a PR → preview deployment with unique URL
+- Rollback: Cloudflare dashboard → Workers → shopifyops-bulk-update → Deployments
+
+Manual deploy (emergency only):
+
 ```bash
 npm run deploy
 ```
+
+### Build configuration (Cloudflare dashboard)
+
+| Setting | Value |
+|---|---|
+| Root directory | `features/bulk-update/worker` |
+| Build command | `npm install` |
+| Deploy command | `npx wrangler deploy` |
+| Production branch | `main` |
+| Build watch path | `features/bulk-update/worker/**` |
+| Build cache | Enabled |
+
+Production secrets are set in the Cloudflare dashboard under Variables and secrets (not via `wrangler secret put`).
 
 ## API
 

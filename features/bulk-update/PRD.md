@@ -36,7 +36,7 @@ Triggered via Activepieces: the user uploads the workbook, selects the sheet, an
 ## Implementation Decisions
 
 ### Runtime
-Cloudflare Worker, TypeScript, deployed via Wrangler. Paid plan required for CPU time headroom with large batches.
+Cloudflare Worker, TypeScript. Deployed automatically via Cloudflare Workers Builds (GitHub integration — `rdiazjimenez/ShopifyOps`, branch `main`). Manual deploy via Wrangler available as fallback. Paid plan required for CPU time headroom with large batches.
 
 ### Shopify API Version
 `2025-04`. Pinned in the Shopify Client Module and documented in `wrangler.toml`. Do not use `unstable` or `latest`.
