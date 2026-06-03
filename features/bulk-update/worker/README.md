@@ -1,6 +1,6 @@
 # bulk-update worker
 
-Cloudflare Worker that accepts an Excel workbook upload and applies bulk price/cost updates to Shopify.
+Cloudflare Worker that accepts an Excel workbook upload and applies bulk SKU/price/cost updates to Shopify.
 
 ## Prerequisites
 
@@ -120,3 +120,18 @@ Response: JSON `ResultReport`
   ]
 }
 ```
+
+### Workbook columns
+
+Supported Matrixify-style columns:
+
+| Column | Behavior |
+|---|---|
+| `Command` | `UPDATE` / `MERGE` update existing variants; unsupported commands are skipped |
+| `Variant ID` | Primary lookup key; numeric IDs are normalized to Shopify GIDs |
+| `Variant SKU` | New SKU when `Variant ID` is present; fallback lookup key when `Variant ID` is blank |
+| `Variant Price` | Updates variant `price` |
+| `Variant Compare At Price` | Updates variant `compareAtPrice` |
+| `Variant Cost` | Updates inventory item cost via `inventoryItem.cost` |
+
+To update only SKU, provide `Command`, `Variant ID`, and the desired `Variant SKU`.

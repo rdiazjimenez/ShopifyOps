@@ -9,6 +9,7 @@ export class ShopifyClientError extends Error {
 
 export interface VariantInput {
   id: string;
+  sku?: string;
   price?: string;
   compareAtPrice?: string;
   cost?: string;
@@ -44,6 +45,7 @@ export class ShopifyClient {
   async updateVariants(productId: string, variants: VariantInput[]): Promise<UpdateVariantsResult> {
     const normalizedVariants = variants.map((v) => {
       const input: Record<string, unknown> = { id: normalizeVariantGid(v.id) };
+      if (v.sku !== undefined) input["sku"] = v.sku;
       if (v.price !== undefined) input["price"] = v.price;
       if (v.compareAtPrice !== undefined) input["compareAtPrice"] = v.compareAtPrice;
       if (v.cost !== undefined) input["inventoryItem"] = { cost: v.cost };
@@ -55,7 +57,7 @@ export class ShopifyClient {
     }>(
       `mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
         productVariantsBulkUpdate(productId: $productId, variants: $variants) {
-          productVariants { id price compareAtPrice inventoryItem { id unitCost { amount } } }
+          productVariants { id sku price compareAtPrice inventoryItem { id unitCost { amount } } }
           userErrors { field message }
         }
       }`,

@@ -25,7 +25,7 @@ function buildWorkbook(
 
 const fixturePath = path.resolve(
   __dirname,
-  "../../Matrixify-Import-Demo-Products.xlsx"
+  "../../ImportProducts-Demo.xlsx"
 );
 
 describe("parseExcel – fixture file (Products sheet)", () => {
@@ -49,18 +49,16 @@ describe("parseExcel – fixture file (Products sheet)", () => {
     expect(rows.length).toBeGreaterThan(0);
   });
 
-  it("first row has command UPDATE and price defined", () => {
+  it("has an UPDATE row with variant ID defined", () => {
     const rows = parseExcel(buffer, "Products");
-    const first = rows[0] as Extract<ParsedRow, { skipped: false }>;
-    expect(first.skipped).toBe(false);
-    expect(first.command).toBe("UPDATE");
-    expect(first.price).toBeDefined();
+    const identified = rows.find((row) => !row.skipped && row.command === "UPDATE" && row.variantId);
+    expect(identified).toBeDefined();
   });
 
-  it("first row has cost defined", () => {
+  it("has a row with newSku defined", () => {
     const rows = parseExcel(buffer, "Products");
-    const first = rows[0] as Extract<ParsedRow, { skipped: false }>;
-    expect(first.cost).toBeDefined();
+    const skuUpdate = rows.find((row) => !row.skipped && row.newSku);
+    expect(skuUpdate).toBeDefined();
   });
 
   it("row numbers start at 1", () => {
@@ -163,6 +161,27 @@ describe("parseExcel – empty cells omitted", () => {
     const rows = parseExcel(buf, "Sheet1");
     const row = rows[0] as Extract<ParsedRow, { skipped: false }>;
     expect("sku" in row).toBe(false);
+  });
+
+  it("treats Variant SKU as newSku when Variant ID is present", () => {
+    const buf = buildWorkbook("Sheet1", [
+      { Command: "UPDATE", "Variant ID": "222", "Variant SKU": "NEW-SKU" },
+    ]);
+    const rows = parseExcel(buf, "Sheet1");
+    const row = rows[0] as Extract<ParsedRow, { skipped: false }>;
+    expect(row.variantId).toBe("222");
+    expect(row.newSku).toBe("NEW-SKU");
+    expect("sku" in row).toBe(false);
+  });
+
+  it("keeps Variant SKU as lookup sku when Variant ID is absent", () => {
+    const buf = buildWorkbook("Sheet1", [
+      { Command: "UPDATE", "Variant SKU": "LOOKUP-SKU", "Variant Price": "9.99" },
+    ]);
+    const rows = parseExcel(buf, "Sheet1");
+    const row = rows[0] as Extract<ParsedRow, { skipped: false }>;
+    expect(row.sku).toBe("LOOKUP-SKU");
+    expect("newSku" in row).toBe(false);
   });
 });
 

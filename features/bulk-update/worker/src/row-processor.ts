@@ -12,9 +12,9 @@ export async function processRow(row: ParsedRow, client: ShopifyClient): Promise
     return { type: "skipped", row: row.row, lookupKey: "", reason: row.reason };
   }
 
-  const { row: rowNum, command, variantId, sku, price, compareAtPrice, cost } = row;
+  const { row: rowNum, command, variantId, sku, newSku, price, compareAtPrice, cost } = row;
 
-  if (!price && !compareAtPrice && !cost) {
+  if (!newSku && !price && !compareAtPrice && !cost) {
     return { type: "skipped", row: rowNum, lookupKey: variantId ?? sku ?? "", reason: "no fields to update" };
   }
 
@@ -44,6 +44,7 @@ export async function processRow(row: ParsedRow, client: ShopifyClient): Promise
   }
 
   const variantInput: VariantInput = { id: resolvedVariantId };
+  if (newSku !== undefined) variantInput.sku = newSku;
   if (price !== undefined) variantInput.price = price;
   if (compareAtPrice !== undefined) variantInput.compareAtPrice = compareAtPrice;
   if (cost !== undefined) variantInput.cost = cost;

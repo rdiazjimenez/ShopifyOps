@@ -260,7 +260,7 @@ describe("runBatch — dry run", () => {
 describe("runBatch — real fixture file", () => {
   it("processes Matrixify demo workbook without throwing", async () => {
     const { parseExcel } = await import("./excel-parser");
-    const filePath = join(__dirname, "../../Matrixify-Import-Demo-Products.xlsx");
+    const filePath = join(__dirname, "../../ImportProducts-Demo.xlsx");
     const buffer = readFileSync(filePath).buffer;
     const rows = parseExcel(buffer, "Products");
 

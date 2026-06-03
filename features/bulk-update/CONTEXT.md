@@ -26,11 +26,15 @@ Optional mode (`?dryRun=true`) where rows are validated and API calls are simula
 ### Excel Workbook
 The source of truth for bulk operation data. Follows Matrixify column format. Each row represents one Variant record. Empty cell = skip that field. Key columns: `Handle`, `Variant ID`, `Variant SKU`, `Command`, `Variant Price`, `Variant Compare At Price`, `Variant Cost`.
 
+When `Variant ID` is present, `Variant SKU` is treated as a field to update on that variant. When `Variant ID` is absent, `Variant SKU` is treated as the fallback lookup key.
+
 ### Command
 Per-row instruction column (Matrixify format). `UPDATE`: update if found, fail if not found. `MERGE`: update if found, fail if not found (create is out of scope). Other values (`NEW`, `DELETE`, `REPLACE`, `IGNORE`, unknown) → row skipped.
 
 ### Lookup Key
 The identifier used to match an Excel row to a Shopify Variant. Variant ID takes precedence; SKU is used as fallback when Variant ID is absent.
+
+If Variant ID is present, the SKU column is no longer a lookup key; it becomes the desired replacement SKU.
 
 ### Shopify API
 Shopify Admin GraphQL API, version `2026-04`. Pinned in the Shopify Client Module (`shopify-client.ts`) and `wrangler.toml`. Do not use `unstable` or `latest`. Required scopes: `write_products`, `read_products`, `write_inventory`, `read_inventory`. `write_inventory` is needed because cost is stored on `InventoryItem` and updated via `inventoryItem.cost` inside `productVariantsBulkUpdate`.

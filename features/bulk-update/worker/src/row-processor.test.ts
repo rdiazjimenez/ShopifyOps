@@ -56,6 +56,13 @@ describe("processRow — no-op row", () => {
     if (result.type === "skipped") expect(result.reason).toBe("no fields to update");
     expect(client.updateVariants).not.toHaveBeenCalled();
   });
+
+  it("does not skip when only newSku is present", async () => {
+    const client = makeClient();
+    const result = await processRow({ ...baseRow, variantId: VARIANT_GID, newSku: "NEW-SKU" }, client);
+    expect(result.type).toBe("pending");
+    if (result.type === "pending") expect(result.variantInput.sku).toBe("NEW-SKU");
+  });
 });
 
 describe("processRow — field dispatch", () => {
@@ -78,6 +85,16 @@ describe("processRow — field dispatch", () => {
       expect(result.variantInput.price).toBe("9.99");
       expect(result.variantInput.compareAtPrice).toBe("14.99");
       expect(result.variantInput.cost).toBe("5.00");
+    }
+  });
+
+  it("passes newSku as sku in variantInput", async () => {
+    const client = makeClient();
+    const result = await processRow({ ...baseRow, variantId: VARIANT_GID, newSku: "NEW-SKU", price: "9.99" }, client);
+    expect(result.type).toBe("pending");
+    if (result.type === "pending") {
+      expect(result.variantInput.sku).toBe("NEW-SKU");
+      expect(result.variantInput.price).toBe("9.99");
     }
   });
 

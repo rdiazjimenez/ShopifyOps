@@ -17,6 +17,7 @@ Triggered via a dedicated Frontend (Cloudflare Pages + Cloudflare Access) or dir
 3. As a merchant, I want to upload an Excel workbook and have cost-per-item updated in bulk, so that my margin reporting stays accurate after supplier price changes.
 4. As a merchant, I want to use my existing Matrixify-format workbooks without reformatting, so that I don't have to maintain two separate spreadsheet schemas.
 5. As a merchant, I want rows identified by Variant ID when available and SKU as fallback, so that I can work with both ID-based and SKU-based exports.
+5a. As a merchant, I want to update a variant's SKU when I provide its Variant ID, so that SKU corrections can be applied in the same bulk workflow.
 6. As a merchant, I want failed rows reported rather than stopping the entire batch, so that a single bad row doesn't block all my other updates.
 7. As a merchant, I want a dry-run mode that shows me what would change without making any updates, so that I can validate my workbook before committing.
 8. As a merchant, I want a Result Report showing total rows, successes, failures, and skips with per-row reasons, so that I can quickly identify and fix problems.
@@ -62,7 +63,7 @@ Accepts raw Excel file bytes and a sheet name. Returns an array of parsed rows (
 
 ### Shopify Client Module
 Wraps Shopify Admin GraphQL API (version `2026-04`). Exposes:
-- `updateVariants(productId, variants[{ id, price?, compareAtPrice?, cost? }])` — single `productVariantsBulkUpdate` mutation. Cost is passed via `inventoryItem: { cost: <value> }` nested in the variant input. Omitted fields are not sent.
+- `updateVariants(productId, variants[{ id, sku?, price?, compareAtPrice?, cost? }])` — single `productVariantsBulkUpdate` mutation. Cost is passed via `inventoryItem: { cost: <value> }` nested in the variant input. Omitted fields are not sent.
 - `resolveSkuToIds(sku)` → `{ variantId, productId }` — uses `first: 2`; throws typed error on 0 results (`"SKU not found"`) or 2+ results (`"SKU matches multiple variants"`).
 
 No Excel knowledge. No separate `inventoryItemUpdate` mutation.
@@ -83,7 +84,7 @@ Map `userErrors` back to individual variant rows using the field-path index (e.g
 `Variant ID` from Matrixify may be numeric (`123456`) or a full GID (`gid://shopify/ProductVariant/123456`). Normalize to full GID before all API calls.
 
 ### Row Processor Module
-Orchestrates a single row: resolves Lookup Key → dispatches fields to Shopify Client. Returns typed `ProcessedRow` (internal). No-op rows (valid lookup key + command, but no price/compareAtPrice/cost) → `skipped`, reason `"no fields to update"`.
+Orchestrates a single row: resolves Lookup Key → dispatches fields to Shopify Client. Returns typed `ProcessedRow` (internal). No-op rows (valid lookup key + command, but no sku/price/compareAtPrice/cost) → `skipped`, reason `"no fields to update"`.
 
 ### Command Semantics
 | Command | Behaviour |
@@ -117,11 +118,15 @@ Groups rows by product → one `updateVariants` call per product. Collects outco
 2. `Variant ID` absent, `Variant SKU` present → call `resolveSkuToIds(sku)`.
 3. Neither present → fail row with reason `"no lookup key"`.
 
+SKU update semantics:
+- `Variant ID` present + `Variant SKU` present → update that variant's SKU to the `Variant SKU` value.
+- `Variant ID` absent + `Variant SKU` present → use `Variant SKU` only as lookup key.
+
 ### Matrixify Column Mapping
 | Excel Column | Shopify Field |
 |---|---|
 | `Variant ID` | Variant GID (normalize from numeric if needed) |
-| `Variant SKU` | SKU (for lookup) |
+| `Variant SKU` | SKU update when `Variant ID` is present; fallback lookup when `Variant ID` is absent |
 | `Handle` | Product handle (informational only) |
 | `Variant Price` | `price` on Variant |
 | `Variant Compare At Price` | `compareAtPrice` on Variant |
@@ -146,7 +151,8 @@ Annotated Workbook: generated client-side after response — original sheet with
 - **Grouped mutation:** Variants belonging to the same product are sent in one `productVariantsBulkUpdate` call, not one call per variant.
 - **Partial/userErrors:** Shopify `userErrors` on a product group marks all variants in that group as failed; other product groups are unaffected.
 - **Result Report invariants:** `total === succeeded + failed + skipped` and `rows.length === total` in all cases.
-- **No-op row:** Row with valid command and lookup key but no price/compareAtPrice/cost appears as `skipped`, reason `"no fields to update"`.
+- **SKU update:** Row with `Variant ID` and `Variant SKU` updates the variant's SKU.
+- **No-op row:** Row with valid command and lookup key but no sku/price/compareAtPrice/cost appears as `skipped`, reason `"no fields to update"`.
 
 ## Testing Decisions
 
@@ -156,7 +162,7 @@ Good tests verify external behavior only — given an Excel file (or parsed rows
 
 **Excel Parsing Module** — unit tested with fixture `.xlsx` files. Assert: correct row extraction, empty-cell skipping, unsupported Command skipping, missing sheet error, case-insensitive + trimmed header matching, duplicate header handling.
 
-**Shopify Client Module** — unit tested with stubbed HTTP layer. Assert: single mutation carries price + compareAtPrice + cost; omitted fields absent from variables; `userErrors` mapped correctly; SKU not found and SKU ambiguous both throw typed errors; numeric IDs normalized to GIDs.
+**Shopify Client Module** — unit tested with stubbed HTTP layer. Assert: single mutation carries sku + price + compareAtPrice + cost; omitted fields absent from variables; `userErrors` mapped correctly; SKU not found and SKU ambiguous both throw typed errors; numeric IDs normalized to GIDs.
 
 **Row Processor Module** — unit tested with stubbed Shopify Client. Assert: Variant ID takes precedence over SKU; no-op row returns `skipped`; UPDATE/MERGE both fail when variant not found; correct shape returned.
 
