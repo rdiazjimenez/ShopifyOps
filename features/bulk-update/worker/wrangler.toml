@@ -1,0 +1,12 @@
+name = "shopifyops-bulk-update"
+main = "src/index.ts"
+compatibility_date = "2025-06-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+# Non-secret config can go here
+
+# Secrets — set via: wrangler secret put SHOPIFY_ACCESS_TOKEN
+# Required secrets:
+#   SHOPIFY_ACCESS_TOKEN  — Shopify Admin API access token
+#   SHOPIFY_STORE_DOMAIN  — e.g. your-store.myshopify.com
