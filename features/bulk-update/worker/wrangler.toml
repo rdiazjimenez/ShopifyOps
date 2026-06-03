@@ -6,7 +6,11 @@ compatibility_flags = ["nodejs_compat"]
 [vars]
 # Non-secret config can go here
 
-# Secrets — set via: wrangler secret put SHOPIFY_ACCESS_TOKEN
+# Secrets — set via: wrangler secret put <NAME>
 # Required secrets:
 #   SHOPIFY_ACCESS_TOKEN  — Shopify Admin API access token
 #   SHOPIFY_STORE_DOMAIN  — e.g. your-store.myshopify.com
+#   API_KEY               — shared secret; Activepieces sends as X-Api-Key header
+#
+# Shopify Admin API version: 2025-04 (pinned in src/shopify-client.ts)
+# Required Shopify scopes: write_products, read_products, read_inventory

@@ -22,6 +22,14 @@ wrangler secret put SHOPIFY_ACCESS_TOKEN
 
 wrangler secret put SHOPIFY_STORE_DOMAIN
 # paste your store domain, e.g. your-store.myshopify.com
+
+wrangler secret put API_KEY
+# paste a strong random secret — this is the shared key Activepieces will send
+```
+
+In Activepieces, add an HTTP header to every request to this worker:
+```
+X-Api-Key: <your API_KEY value>
 ```
 
 ## Development

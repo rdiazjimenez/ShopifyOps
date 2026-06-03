@@ -1,0 +1,191 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { ShopifyClient, ShopifyClientError } from "./shopify-client";
+
+const STORE_DOMAIN = "test-store.myshopify.com";
+const ACCESS_TOKEN = "test-token";
+const PRODUCT_GID = "gid://shopify/Product/111";
+const VARIANT_GID = "gid://shopify/ProductVariant/222";
+
+function makeClient(fetchFn: typeof fetch) {
+  return new ShopifyClient(STORE_DOMAIN, ACCESS_TOKEN, fetchFn);
+}
+
+describe("ShopifyClient.updateVariants", () => {
+  it("sends price, compareAtPrice, cost in single mutation", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: {
+            productVariantsBulkUpdate: {
+              productVariants: [{ id: VARIANT_GID, price: "19.99", compareAtPrice: "24.99", inventoryItem: { id: "gid://shopify/InventoryItem/333", unitCost: { amount: "10.00" } } }],
+              userErrors: [],
+            },
+          },
+        }),
+        { headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    const client = makeClient(fetchFn);
+    const result = await client.updateVariants(PRODUCT_GID, [
+      { id: VARIANT_GID, price: "19.99", compareAtPrice: "24.99", cost: "10.00" },
+    ]);
+
+    expect(result.userErrors).toHaveLength(0);
+    expect(result.productVariants).toHaveLength(1);
+
+    const body = JSON.parse(fetchFn.mock.calls[0][1].body as string);
+    const variant = body.variables.variants[0];
+    expect(variant.price).toBe("19.99");
+    expect(variant.compareAtPrice).toBe("24.99");
+    expect(variant.inventoryItem.cost).toBe("10.00");
+  });
+
+  it("omits undefined fields from mutation variables", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: { productVariantsBulkUpdate: { productVariants: [{ id: VARIANT_GID, price: "9.99", compareAtPrice: null, inventoryItem: { id: "gid://shopify/InventoryItem/333", unitCost: null } }], userErrors: [] } },
+        }),
+        { headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    const client = makeClient(fetchFn);
+    await client.updateVariants(PRODUCT_GID, [{ id: VARIANT_GID, price: "9.99" }]);
+
+    const body = JSON.parse(fetchFn.mock.calls[0][1].body as string);
+    const variant = body.variables.variants[0];
+    expect(variant.price).toBe("9.99");
+    expect("compareAtPrice" in variant).toBe(false);
+    expect("inventoryItem" in variant).toBe(false);
+  });
+
+  it("returns userErrors from Shopify response", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: {
+            productVariantsBulkUpdate: {
+              productVariants: [],
+              userErrors: [{ field: ["variants", "0", "price"], message: "Price is not a number" }],
+            },
+          },
+        }),
+        { headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    const client = makeClient(fetchFn);
+    const result = await client.updateVariants(PRODUCT_GID, [{ id: VARIANT_GID, price: "bad" }]);
+    expect(result.userErrors).toHaveLength(1);
+    expect(result.userErrors[0]?.message).toBe("Price is not a number");
+  });
+
+  it("throws ShopifyClientError on HTTP error", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response("Unauthorized", { status: 401 })
+    );
+
+    const client = makeClient(fetchFn);
+    await expect(
+      client.updateVariants(PRODUCT_GID, [{ id: VARIANT_GID, price: "9.99" }])
+    ).rejects.toThrow(ShopifyClientError);
+  });
+
+  it("normalizes numeric variant ID to full GID", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ data: { productVariantsBulkUpdate: { productVariants: [], userErrors: [] } } }),
+        { headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    const client = makeClient(fetchFn);
+    await client.updateVariants(PRODUCT_GID, [{ id: "222", price: "9.99" }]);
+
+    const body = JSON.parse(fetchFn.mock.calls[0][1].body as string);
+    expect(body.variables.variants[0].id).toBe("gid://shopify/ProductVariant/222");
+  });
+});
+
+describe("ShopifyClient.resolveSkuToIds", () => {
+  it("returns variantId and productId for unique SKU", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: {
+            productVariants: {
+              edges: [
+                { node: { id: VARIANT_GID, product: { id: PRODUCT_GID } } },
+              ],
+            },
+          },
+        }),
+        { headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    const client = makeClient(fetchFn);
+    const result = await client.resolveSkuToIds("SKU-001");
+    expect(result.variantId).toBe(VARIANT_GID);
+    expect(result.productId).toBe(PRODUCT_GID);
+  });
+
+  it("throws with 'SKU not found' when 0 results", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ data: { productVariants: { edges: [] } } }),
+        { headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    const client = makeClient(fetchFn);
+    await expect(client.resolveSkuToIds("MISSING")).rejects.toThrow("SKU not found");
+  });
+
+  it("throws with 'SKU matches multiple variants' when 2+ results", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: {
+            productVariants: {
+              edges: [
+                { node: { id: "gid://shopify/ProductVariant/1", product: { id: PRODUCT_GID } } },
+                { node: { id: "gid://shopify/ProductVariant/2", product: { id: PRODUCT_GID } } },
+              ],
+            },
+          },
+        }),
+        { headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    const client = makeClient(fetchFn);
+    await expect(client.resolveSkuToIds("DUPE")).rejects.toThrow("SKU matches multiple variants");
+  });
+
+  it("uses first: 2 in the query", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ data: { productVariants: { edges: [{ node: { id: VARIANT_GID, product: { id: PRODUCT_GID } } }] } } }),
+        { headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    const client = makeClient(fetchFn);
+    await client.resolveSkuToIds("SKU-001");
+
+    const body = JSON.parse(fetchFn.mock.calls[0][1].body as string);
+    expect(body.query).toContain("first: 2");
+  });
+
+  it("throws ShopifyClientError on HTTP error", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response("Server Error", { status: 500 })
+    );
+
+    const client = makeClient(fetchFn);
+    await expect(client.resolveSkuToIds("SKU-001")).rejects.toThrow(ShopifyClientError);
+  });
+});
