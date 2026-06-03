@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Shopify Bulk Update</title>
+  <link rel="stylesheet" href="style.css" />
+  <!-- xlsx 0.18.5 — pinned, SRI-locked -->
+  <script
+    src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"
+    integrity="sha384-vtjasyidUo0kW94K5MXDXntzOJpQgBKXmE7e2Ga4LG0skTTLeBi97eFAXsqewJjw"
+    crossorigin="anonymous"
+  ></script>
+</head>
+<body>
+  <div class="container">
+    <h1>Shopify Bulk Variant Update</h1>
+
+    <form id="upload-form" novalidate>
+      <!-- Step 1: File picker -->
+      <div class="field-group">
+        <label for="file-input">Excel workbook (.xlsx)</label>
+        <input
+          id="file-input"
+          type="file"
+          accept=".xlsx"
+          required
+          aria-describedby="file-hint"
+        />
+        <span id="file-hint" class="hint">Select an .xlsx file to populate the sheet list.</span>
+      </div>
+
+      <!-- Step 2: Sheet selector (populated after file pick) -->
+      <div class="field-group" id="sheet-group" hidden>
+        <label for="sheet-select">Sheet</label>
+        <select id="sheet-select" required></select>
+      </div>
+
+      <!-- Step 3: Dry-run toggle -->
+      <div class="field-group checkbox-group">
+        <label>
+          <input id="dry-run" type="checkbox" />
+          Dry run (preview changes without applying them)
+        </label>
+      </div>
+
+      <!-- Submit -->
+      <div class="field-group">
+        <button id="submit-btn" type="submit" disabled>Upload &amp; Update</button>
+      </div>
+    </form>
+
+    <!-- Loading indicator -->
+    <div id="loading" hidden>
+      <div class="spinner" aria-label="Loading"></div>
+      <p>Processing… this may take a moment.</p>
+    </div>
+
+    <!-- Error banner -->
+    <div id="error-banner" class="banner banner--error" hidden role="alert"></div>
+
+    <!-- Result report -->
+    <section id="result-section" hidden>
+      <h2>Result Report</h2>
+
+      <div id="summary" class="summary-grid">
+        <div class="summary-card">
+          <span class="count" id="count-total">0</span>
+          <span class="label">Total</span>
+        </div>
+        <div class="summary-card summary-card--success">
+          <span class="count" id="count-succeeded">0</span>
+          <span class="label">Succeeded</span>
+        </div>
+        <div class="summary-card summary-card--fail">
+          <span class="count" id="count-failed">0</span>
+          <span class="label">Failed</span>
+        </div>
+        <div class="summary-card summary-card--skip">
+          <span class="count" id="count-skipped">0</span>
+          <span class="label">Skipped</span>
+        </div>
+      </div>
+
+      <div class="table-wrapper">
+        <table id="rows-table">
+          <thead>
+            <tr>
+              <th>Row</th>
+              <th>Lookup Key</th>
+              <th>Status</th>
+              <th>Reason</th>
+            </tr>
+          </thead>
+          <tbody id="rows-tbody"></tbody>
+        </table>
+      </div>
+
+      <!-- Download button — populated by app.js after result -->
+      <div id="download-area"></div>
+    </section>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
