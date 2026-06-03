@@ -49,10 +49,10 @@ export function parseExcel(buffer: ArrayBuffer, sheetName: string): ParsedRow[] 
   const headers: Record<string, number> = {};
   for (let c = range.s.c; c <= range.e.c; c++) {
     const val = cellValue(sheet, c, headerRow);
-    if (val != null) headers[val] = c;
+    if (val != null) headers[val.toLowerCase()] = c;
   }
 
-  const colOf = (name: string): number | undefined => headers[name];
+  const colOf = (name: string): number | undefined => headers[name.toLowerCase().trim()];
 
   const results: ParsedRow[] = [];
 

@@ -18,7 +18,7 @@ vi.mock("./batch-orchestrator", () => ({
     succeeded: 1,
     failed: 0,
     skipped: 0,
-    errors: [],
+    rows: [],
   }),
 }));
 
@@ -112,7 +112,7 @@ describe("POST /bulk-update — response", () => {
   it("returns Result Report shape on success", async () => {
     const res = await post("/bulk-update?sheet=Products", makeXlsxFormData(), authHeader);
     const body = await res.json() as Record<string, unknown>;
-    expect(body).toMatchObject({ total: 1, succeeded: 1, failed: 0, skipped: 0, errors: [] });
+    expect(body).toMatchObject({ total: 1, succeeded: 1, failed: 0, skipped: 0, rows: [] });
   });
 
   it("passes dryRun=true to batch orchestrator", async () => {
