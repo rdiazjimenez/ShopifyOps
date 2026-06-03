@@ -115,6 +115,10 @@ button[type="submit"]:disabled {
   color: #374151;
 }
 
+#loading[hidden] {
+  display: none;
+}
+
 .spinner {
   width: 22px;
   height: 22px;
