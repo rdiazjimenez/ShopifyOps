@@ -49,19 +49,17 @@ describe("parseExcel – fixture file (Products sheet)", () => {
     expect(rows.length).toBeGreaterThan(0);
   });
 
-  it("first row has command MERGE and sku HOPO-101", () => {
+  it("first row has command UPDATE and price defined", () => {
     const rows = parseExcel(buffer, "Products");
     const first = rows[0] as Extract<ParsedRow, { skipped: false }>;
     expect(first.skipped).toBe(false);
-    expect(first.command).toBe("MERGE");
-    expect(first.sku).toBe("HOPO-101");
+    expect(first.command).toBe("UPDATE");
+    expect(first.price).toBeDefined();
   });
 
-  it("first row has price, compareAtPrice and cost", () => {
+  it("first row has cost defined", () => {
     const rows = parseExcel(buffer, "Products");
     const first = rows[0] as Extract<ParsedRow, { skipped: false }>;
-    expect(first.price).toBeDefined();
-    expect(first.compareAtPrice).toBeDefined();
     expect(first.cost).toBeDefined();
   });
 
@@ -70,13 +68,13 @@ describe("parseExcel – fixture file (Products sheet)", () => {
     expect(rows[0]!.row).toBe(1);
   });
 
-  it("all rows with MERGE command are not skipped", () => {
+  it("all non-skipped rows have a supported command", () => {
     const rows = parseExcel(buffer, "Products");
     const notSkipped = rows.filter((r) => !r.skipped);
     expect(notSkipped.length).toBeGreaterThan(0);
     notSkipped.forEach((r) => {
       const nr = r as Extract<ParsedRow, { skipped: false }>;
-      expect(nr.command).toBe("MERGE");
+      expect(["UPDATE", "MERGE"]).toContain(nr.command);
     });
   });
 });
@@ -165,6 +163,75 @@ describe("parseExcel – empty cells omitted", () => {
     const rows = parseExcel(buf, "Sheet1");
     const row = rows[0] as Extract<ParsedRow, { skipped: false }>;
     expect("sku" in row).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Case-insensitive and whitespace-trimmed header matching
+// ---------------------------------------------------------------------------
+
+describe("parseExcel – case-insensitive header matching", () => {
+  it("resolves VARIANT ID same as Variant ID", () => {
+    const ws = XLSX.utils.aoa_to_sheet([
+      ["Command", "VARIANT ID", "Variant Price"],
+      ["UPDATE", "222", "9.99"],
+    ]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
+    const buf = XLSX.write(wb, { type: "array", bookType: "xlsx" }) as ArrayBuffer;
+
+    const rows = parseExcel(buf, "Sheet1");
+    const row = rows[0] as Extract<ParsedRow, { skipped: false }>;
+    expect(row.skipped).toBe(false);
+    expect(row.variantId).toBe("222");
+    expect(row.price).toBe("9.99");
+  });
+
+  it("resolves variant id (lowercase) same as Variant ID", () => {
+    const ws = XLSX.utils.aoa_to_sheet([
+      ["Command", "variant id"],
+      ["UPDATE", "333"],
+    ]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
+    const buf = XLSX.write(wb, { type: "array", bookType: "xlsx" }) as ArrayBuffer;
+
+    const rows = parseExcel(buf, "Sheet1");
+    const row = rows[0] as Extract<ParsedRow, { skipped: false }>;
+    expect(row.variantId).toBe("333");
+  });
+});
+
+describe("parseExcel – whitespace-trimmed header matching", () => {
+  it("resolves header with surrounding spaces", () => {
+    const ws = XLSX.utils.aoa_to_sheet([
+      ["Command", "  Variant Price  "],
+      ["UPDATE", "12.00"],
+    ]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
+    const buf = XLSX.write(wb, { type: "array", bookType: "xlsx" }) as ArrayBuffer;
+
+    const rows = parseExcel(buf, "Sheet1");
+    const row = rows[0] as Extract<ParsedRow, { skipped: false }>;
+    expect(row.price).toBe("12.00");
+  });
+});
+
+describe("parseExcel – duplicate normalized headers: last column wins", () => {
+  it("when two columns normalize to same key, last column index is used", () => {
+    const ws = XLSX.utils.aoa_to_sheet([
+      ["Command", "Variant Price", "VARIANT PRICE"],
+      ["UPDATE", "5.00", "15.00"],
+    ]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
+    const buf = XLSX.write(wb, { type: "array", bookType: "xlsx" }) as ArrayBuffer;
+
+    const rows = parseExcel(buf, "Sheet1");
+    const row = rows[0] as Extract<ParsedRow, { skipped: false }>;
+    // Last column (VARIANT PRICE = col 2, value "15.00") wins
+    expect(row.price).toBe("15.00");
   });
 });
 

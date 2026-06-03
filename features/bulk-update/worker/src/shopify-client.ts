@@ -1,4 +1,4 @@
-const API_VERSION = "2025-04";
+const API_VERSION = "2026-04";
 
 export class ShopifyClientError extends Error {
   constructor(message: string) {

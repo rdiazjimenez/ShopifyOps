@@ -23,7 +23,7 @@ describe("ShopifyClient endpoint", () => {
     await client.resolveVariantToProductId(VARIANT_GID);
 
     expect(fetchFn.mock.calls[0][0]).toBe(
-      `https://${STORE_DOMAIN}/admin/api/2025-04/graphql.json`
+      `https://${STORE_DOMAIN}/admin/api/2026-04/graphql.json`
     );
   });
 

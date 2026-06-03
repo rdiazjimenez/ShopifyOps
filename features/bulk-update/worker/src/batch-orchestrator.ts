@@ -2,23 +2,28 @@ import type { ParsedRow } from "./excel-parser";
 import type { ShopifyClient, VariantInput } from "./shopify-client";
 import { processRow } from "./row-processor";
 
+export interface RowResult {
+  row: number;
+  lookupKey: string;
+  status: "success" | "failed" | "skipped";
+  reason?: string;
+}
+
 export interface ResultReport {
   total: number;
   succeeded: number;
   failed: number;
   skipped: number;
-  errors: Array<{ row: number; lookupKey: string; reason: string }>;
+  rows: RowResult[];
 }
 
 export async function runBatch(
-  rows: ParsedRow[],
+  parsedRows: ParsedRow[],
   client: ShopifyClient,
   dryRun: boolean
 ): Promise<ResultReport> {
-  // Resolve all rows concurrently
-  const processed = await Promise.all(rows.map((row) => processRow(row, client)));
+  const processed = await Promise.all(parsedRows.map((row) => processRow(row, client)));
 
-  // Group pending rows by productId
   const pendingByProduct = new Map<string, Array<{ row: number; lookupKey: string; variantInput: VariantInput }>>();
   for (const p of processed) {
     if (p.type === "pending") {
@@ -28,26 +33,28 @@ export async function runBatch(
     }
   }
 
-  const errors: ResultReport["errors"] = [];
+  const rows: RowResult[] = [];
   let succeeded = 0;
+  let skipped = 0;
 
   // Collect failed/skipped from resolution phase
-  let skipped = 0;
   for (const p of processed) {
     if (p.type === "failed") {
-      errors.push({ row: p.row, lookupKey: p.lookupKey, reason: p.reason });
+      rows.push({ row: p.row, lookupKey: p.lookupKey, status: "failed", reason: p.reason });
     } else if (p.type === "skipped") {
+      rows.push({ row: p.row, lookupKey: p.lookupKey, status: "skipped", reason: p.reason });
       skipped++;
     }
   }
 
   if (dryRun) {
-    // In dry-run, pending rows count as succeeded (would have changed)
     for (const group of pendingByProduct.values()) {
+      for (const item of group) {
+        rows.push({ row: item.row, lookupKey: item.lookupKey, status: "success" });
+      }
       succeeded += group.length;
     }
   } else {
-    // Execute one updateVariants per product
     for (const [productId, group] of pendingByProduct.entries()) {
       try {
         const result = await client.updateVariants(
@@ -56,25 +63,27 @@ export async function runBatch(
         );
 
         if (result.userErrors.length > 0) {
-          // Map userErrors back to rows — all rows in this group are considered failed
           const reason = result.userErrors.map((e) => e.message).join("; ");
           for (const item of group) {
-            errors.push({ row: item.row, lookupKey: item.lookupKey, reason });
+            rows.push({ row: item.row, lookupKey: item.lookupKey, status: "failed", reason });
           }
         } else {
+          for (const item of group) {
+            rows.push({ row: item.row, lookupKey: item.lookupKey, status: "success" });
+          }
           succeeded += group.length;
         }
       } catch (err) {
         const reason = err instanceof Error ? err.message : "Shopify update failed";
         for (const item of group) {
-          errors.push({ row: item.row, lookupKey: item.lookupKey, reason });
+          rows.push({ row: item.row, lookupKey: item.lookupKey, status: "failed", reason });
         }
       }
     }
   }
 
-  const failed = errors.length;
+  const failed = rows.filter((r) => r.status === "failed").length;
   const total = succeeded + failed + skipped;
 
-  return { total, succeeded, failed, skipped, errors };
+  return { total, succeeded, failed, skipped, rows };
 }
