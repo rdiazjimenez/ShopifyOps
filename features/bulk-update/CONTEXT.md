@@ -32,6 +32,9 @@ Per-row instruction column (Matrixify format). `UPDATE`: update if found, fail i
 ### Lookup Key
 The identifier used to match an Excel row to a Shopify Variant. Variant ID takes precedence; SKU is used as fallback when Variant ID is absent.
 
+### Shopify API
+Shopify Admin GraphQL API, version `2026-04`. Pinned in the Shopify Client Module (`shopify-client.ts`) and `wrangler.toml`. Do not use `unstable` or `latest`. Required scopes: `write_products`, `read_products`, `write_inventory`, `read_inventory`. `write_inventory` is needed because cost is stored on `InventoryItem` and updated via `inventoryItem.cost` inside `productVariantsBulkUpdate`.
+
 ### Store Credentials
 Single Shopify store. Admin API token stored as Cloudflare Worker secret (`SHOPIFY_ACCESS_TOKEN`). Store domain stored as `SHOPIFY_STORE_DOMAIN`.
 
