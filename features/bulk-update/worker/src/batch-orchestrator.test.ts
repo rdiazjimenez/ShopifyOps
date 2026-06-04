@@ -14,9 +14,11 @@ const VARIANT_3 = "gid://shopify/ProductVariant/3";
 function makeClient(overrides: Partial<ShopifyClient> = {}): ShopifyClient {
   return {
     updateVariants: vi.fn().mockResolvedValue({ productVariants: [], userErrors: [] }),
+    createVariants: vi.fn().mockResolvedValue({ productVariants: [], userErrors: [] }),
     resolveSkuToIds: vi.fn(),
     resolveVariantToProductId: vi.fn(),
     resolveHandleToProductId: vi.fn().mockResolvedValue(PRODUCT_A),
+    resolveProductToSingleVariantId: vi.fn().mockResolvedValue(VARIANT_1),
     updateProduct: vi.fn().mockResolvedValue({ product: { id: PRODUCT_A }, userErrors: [] }),
     fetchProductTags: vi.fn().mockResolvedValue([]),
     ...overrides,
@@ -262,7 +264,7 @@ describe("runBatch — dry run", () => {
 });
 
 describe("runBatch — real fixture file", () => {
-  it("processes Matrixify demo workbook without throwing", async () => {
+  it("dry-run of demo workbook: total=5, succeeded=4, skipped=1, failed=0", async () => {
     const { parseExcel } = await import("./excel-parser");
     const filePath = join(__dirname, "../../ImportProducts-Demo.xlsx");
     const buffer = readFileSync(filePath).buffer;
@@ -274,8 +276,12 @@ describe("runBatch — real fixture file", () => {
     });
 
     const report = await runBatch(rows, client, true);
-    expect(report.total).toBe(report.succeeded + report.failed + report.skipped);
-    expect(report.total).toBeGreaterThan(0);
+    expect(report.total).toBe(5);
+    expect(report.succeeded).toBe(4);
+    expect(report.skipped).toBe(1);
+    expect(report.failed).toBe(0);
+    const skippedRow = report.rows.find((r) => r.status === "skipped");
+    expect(skippedRow?.reason).toContain("unsupported command");
   });
 });
 
@@ -713,9 +719,10 @@ describe("runBatch — product-path Product ID rows (Issue #32)", () => {
 
     const report = await runBatch(rows, client, false);
     expect(updateVariants).toHaveBeenCalledTimes(1);
-    expect(updateProduct).toHaveBeenCalledTimes(1);
-    expect(updateProduct).toHaveBeenCalledWith(PRODUCT_A, expect.objectContaining({ title: "New Title" }));
-    expect(report.succeeded).toBe(2);
+    expect(updateProduct).not.toHaveBeenCalled();
+    expect(report.succeeded).toBe(1);
+    expect(report.skipped).toBe(1);
+    expect(report.rows.find(r => r.row === 2)?.reason).toBe("duplicate product row");
   });
 
   it("dry-run: product-path productUpdate suppressed; row appears as success", async () => {
@@ -744,12 +751,11 @@ describe("runBatch — product-path Product ID rows (Issue #32)", () => {
     expect(report.rows[0]?.reason).toBe("no fields to update");
   });
 
-  it("Command=NEW with valid ID → skipped (not failed) at parser level", async () => {
-    // NEW is an unsupported command so it's skipped by the parser, not failed
+  it("skipped row (unsupported command) → skipped, not failed", async () => {
     const client = makeClient();
 
     const rows = [
-      { skipped: true as const, row: 1, reason: "unsupported command: NEW" },
+      { skipped: true as const, row: 1, reason: "unsupported command: DELETE" },
     ];
 
     const report = await runBatch(rows, client, false);
@@ -825,26 +831,22 @@ describe("runBatch - handle product-path rows (Issue #33)", () => {
     expect(updateProduct).toHaveBeenCalledTimes(1);
   });
 
-  it("dry-run: resolveHandleToProductId fires but productUpdate suppressed", async () => {
-    const resolveHandleToProductId = vi.fn().mockResolvedValue(PRODUCT_A);
+  it("dry-run: handle-path productUpdate suppressed; row appears as success", async () => {
     const updateProduct = vi.fn();
-    const client = makeClient({ resolveHandleToProductId, updateProduct });
+    const client = makeClient({ updateProduct });
 
     const rows = [
       { skipped: false as const, row: 1, command: "UPDATE" as const, handle: "my-product", title: "T" },
     ];
 
     const report = await runBatch(rows, client, true);
-    expect(resolveHandleToProductId).toHaveBeenCalled();
     expect(updateProduct).not.toHaveBeenCalled();
     expect(report.rows[0]?.status).toBe("success");
     expect(report.succeeded).toBe(1);
   });
 
-  it("ID wins over Handle: Product ID present - resolveHandleToProductId not called", async () => {
-    const resolveHandleToProductId = vi.fn();
+  it("ID wins over Handle: Product ID present → result uses Product ID GID as productId", async () => {
     const client = makeClient({
-      resolveHandleToProductId,
       updateProduct: vi.fn().mockResolvedValue({ product: { id: PRODUCT_A }, userErrors: [] }),
     });
 
@@ -852,8 +854,9 @@ describe("runBatch - handle product-path rows (Issue #33)", () => {
       { skipped: false as const, row: 1, command: "UPDATE" as const, productId: "111", handle: "my-product", title: "T" },
     ];
 
-    await runBatch(rows, client, false);
-    expect(resolveHandleToProductId).not.toHaveBeenCalled();
+    const report = await runBatch(rows, client, false);
+    expect(report.succeeded).toBe(1);
+    expect(report.rows[0]?.lookupKey).toBe("111");
   });
 
   it("variant row before handle-path row (reversed order) → both updateVariants and updateProduct fire", async () => {
@@ -875,8 +878,74 @@ describe("runBatch - handle product-path rows (Issue #33)", () => {
 
     const report = await runBatch(rows, client, false);
     expect(updateVariants).toHaveBeenCalledTimes(1);
-    expect(updateProduct).toHaveBeenCalledTimes(1);
-    expect(updateProduct).toHaveBeenCalledWith(PRODUCT_A, expect.objectContaining({ title: "New Title" }));
-    expect(report.succeeded).toBe(2);
+    expect(updateProduct).not.toHaveBeenCalled();
+    expect(report.succeeded).toBe(1);
+    expect(report.skipped).toBe(1);
+    expect(report.rows.find(r => r.row === 2)?.reason).toBe("duplicate product row");
+  });
+});
+
+describe("runBatch - NEW command", () => {
+  it("NEW with Product ID calls createVariants and not updateVariants", async () => {
+    const updateVariants = vi.fn().mockResolvedValue({ productVariants: [], userErrors: [] });
+    const createVariants = vi.fn().mockResolvedValue({ productVariants: [], userErrors: [] });
+    const client = makeClient({ updateVariants, createVariants });
+
+    const rows = [
+      { skipped: false as const, row: 1, command: "NEW" as const, productId: "111", newSku: "NEW-SKU", price: "9.99" },
+    ];
+
+    const report = await runBatch(rows, client, false);
+    expect(updateVariants).not.toHaveBeenCalled();
+    expect(createVariants).toHaveBeenCalledTimes(1);
+    expect(createVariants).toHaveBeenCalledWith(PRODUCT_A, [expect.objectContaining({ sku: "NEW-SKU", price: "9.99" })]);
+    expect(report.succeeded).toBe(1);
+  });
+
+  it("NEW with Handle calls createVariants under resolved product", async () => {
+    const createVariants = vi.fn().mockResolvedValue({ productVariants: [], userErrors: [] });
+    const client = makeClient({
+      resolveHandleToProductId: vi.fn().mockResolvedValue(PRODUCT_A),
+      createVariants,
+    });
+
+    const rows = [
+      { skipped: false as const, row: 1, command: "NEW" as const, handle: "my-product", newSku: "NEW-SKU" },
+    ];
+
+    const report = await runBatch(rows, client, false);
+    expect(createVariants).toHaveBeenCalledTimes(1);
+    expect(createVariants).toHaveBeenCalledWith(PRODUCT_A, [expect.objectContaining({ sku: "NEW-SKU" })]);
+    expect(report.succeeded).toBe(1);
+  });
+
+  it("NEW with no Product ID or Handle fails with no lookup key", async () => {
+    const createVariants = vi.fn();
+    const client = makeClient({ createVariants });
+
+    const rows = [
+      { skipped: false as const, row: 1, command: "NEW" as const, newSku: "NEW-SKU" },
+    ];
+
+    const report = await runBatch(rows, client, false);
+    expect(createVariants).not.toHaveBeenCalled();
+    expect(report.failed).toBe(1);
+    expect(report.rows[0]?.reason).toBe("no lookup key");
+  });
+
+  it("NEW with Product ID creates variant even when single-variant auto-resolve would fail on multi-variant product", async () => {
+    const createVariants = vi.fn().mockResolvedValue({ productVariants: [], userErrors: [] });
+    const client = makeClient({
+      resolveProductToSingleVariantId: vi.fn().mockRejectedValue(new ShopifyClientError("Product has multiple variants â€” Variant ID required")),
+      createVariants,
+    });
+
+    const rows = [
+      { skipped: false as const, row: 1, command: "NEW" as const, productId: "111", newSku: "NEW-SKU" },
+    ];
+
+    const report = await runBatch(rows, client, false);
+    expect(createVariants).toHaveBeenCalledTimes(1);
+    expect(report.succeeded).toBe(1);
   });
 });

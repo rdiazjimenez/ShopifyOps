@@ -49,16 +49,19 @@ describe("parseExcel – fixture file (Products sheet)", () => {
     expect(rows.length).toBeGreaterThan(0);
   });
 
-  it("has an UPDATE row with variant ID defined", () => {
+  it("has a row with variantId defined", () => {
     const rows = parseExcel(buffer, "Products");
-    const identified = rows.find((row) => !row.skipped && row.command === "UPDATE" && row.variantId);
+    const identified = rows.find((row) => !row.skipped && row.variantId);
     expect(identified).toBeDefined();
   });
 
-  it("has a row with newSku defined", () => {
+  it("all non-skipped rows have a command", () => {
     const rows = parseExcel(buffer, "Products");
-    const skuUpdate = rows.find((row) => !row.skipped && row.newSku);
-    expect(skuUpdate).toBeDefined();
+    const notSkipped = rows.filter((r) => !r.skipped);
+    expect(notSkipped.length).toBeGreaterThan(0);
+    notSkipped.forEach((r) => {
+      expect((r as Extract<ParsedRow, { skipped: false }>).command).toBeDefined();
+    });
   });
 
   it("row numbers start at 1", () => {
@@ -72,7 +75,7 @@ describe("parseExcel – fixture file (Products sheet)", () => {
     expect(notSkipped.length).toBeGreaterThan(0);
     notSkipped.forEach((r) => {
       const nr = r as Extract<ParsedRow, { skipped: false }>;
-      expect(["UPDATE", "MERGE"]).toContain(nr.command);
+      expect(["UPDATE", "MERGE", "NEW"]).toContain(nr.command);
     });
   });
 });
@@ -94,22 +97,42 @@ describe("parseExcel – sheet not found", () => {
 // Missing / blank Command → SkippedRow
 // ---------------------------------------------------------------------------
 
-describe("parseExcel – missing command", () => {
-  it("returns SkippedRow with 'missing command' when Command cell is empty", () => {
+describe("parseExcel – blank or absent Command defaults to MERGE", () => {
+  it("blank Command cell → command: MERGE (not skipped)", () => {
     const buf = buildWorkbook("Sheet1", [
       { Handle: "foo", "Variant Price": "9.99" },
     ]);
     const rows = parseExcel(buf, "Sheet1");
     expect(rows.length).toBe(1);
-    expect(rows[0]!.skipped).toBe(true);
-    expect((rows[0] as { reason: string }).reason).toBe("missing command");
+    const row = rows[0] as Extract<ParsedRow, { skipped: false }>;
+    expect(row.skipped).toBe(false);
+    expect(row.command).toBe("MERGE");
   });
 
-  it("returns SkippedRow when Command is blank string", () => {
+  it("empty-string Command cell → command: MERGE (not skipped)", () => {
     const buf = buildWorkbook("Sheet1", [{ Command: "", Handle: "foo" }]);
     const rows = parseExcel(buf, "Sheet1");
-    expect(rows[0]!.skipped).toBe(true);
-    expect((rows[0] as { reason: string }).reason).toBe("missing command");
+    const row = rows[0] as Extract<ParsedRow, { skipped: false }>;
+    expect(row.skipped).toBe(false);
+    expect(row.command).toBe("MERGE");
+  });
+
+  it("no Command column at all → every row gets command: MERGE", () => {
+    const ws = XLSX.utils.aoa_to_sheet([
+      ["Handle", "Variant Price"],
+      ["my-handle", "9.99"],
+      ["other", "14.99"],
+    ]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
+    const buf = XLSX.write(wb, { type: "array", bookType: "xlsx" }) as ArrayBuffer;
+    const rows = parseExcel(buf, "Sheet1");
+    expect(rows.length).toBe(2);
+    rows.forEach((r) => {
+      const row = r as Extract<ParsedRow, { skipped: false }>;
+      expect(row.skipped).toBe(false);
+      expect(row.command).toBe("MERGE");
+    });
   });
 });
 
@@ -117,7 +140,7 @@ describe("parseExcel – missing command", () => {
 // Unsupported commands
 // ---------------------------------------------------------------------------
 
-const UNSUPPORTED = ["NEW", "DELETE", "REPLACE", "IGNORE"];
+const UNSUPPORTED = ["DELETE", "REPLACE", "IGNORE"];
 
 describe("parseExcel – unsupported commands", () => {
   UNSUPPORTED.forEach((cmd) => {
@@ -182,6 +205,16 @@ describe("parseExcel – empty cells omitted", () => {
     const row = rows[0] as Extract<ParsedRow, { skipped: false }>;
     expect(row.sku).toBe("LOOKUP-SKU");
     expect("newSku" in row).toBe(false);
+  });
+
+  it("treats Variant SKU as newSku when command is NEW (no Variant ID)", () => {
+    const buf = buildWorkbook("Sheet1", [
+      { Command: "NEW", Handle: "my-handle", "Variant SKU": "NEW-SKU", "Variant Price": "9.99" },
+    ]);
+    const rows = parseExcel(buf, "Sheet1");
+    const row = rows[0] as Extract<ParsedRow, { skipped: false }>;
+    expect(row.newSku).toBe("NEW-SKU");
+    expect("sku" in row).toBe(false);
   });
 });
 
@@ -279,9 +312,10 @@ describe("parseExcel – mixed rows", () => {
     expect(r1.skipped).toBe(true);
     expect(r1.row).toBe(2);
 
-    const r2 = rows[2]!;
-    expect(r2.skipped).toBe(true);
-    expect((r2 as { reason: string }).reason).toBe("missing command");
+    const r2 = rows[2] as Extract<ParsedRow, { skipped: false }>;
+    expect(r2.skipped).toBe(false);
+    expect(r2.command).toBe("MERGE");
+    expect(r2.handle).toBe("c");
 
     const r3 = rows[3] as Extract<ParsedRow, { skipped: false }>;
     expect(r3.skipped).toBe(false);

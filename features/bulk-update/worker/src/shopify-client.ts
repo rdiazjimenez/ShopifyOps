@@ -173,11 +173,25 @@ export class ShopifyClient {
     return { variantId: node.id, productId: node.product.id };
   }
 
-  /**
-   * Resolves a product handle to its product GID.
-   * Throws ShopifyClientError("Handle not found") when no product matches.
-   * Validated against Shopify Admin API schema (2026-04).
-   */
+  async resolveProductToSingleVariantId(productId: string): Promise<string> {
+    const result = await this.graphql<{
+      product: { variants: { edges: Array<{ node: { id: string } }> } } | null;
+    }>(
+      `query resolveProductToSingleVariantId($id: ID!) {
+        product(id: $id) {
+          variants(first: 2) { edges { node { id } } }
+        }
+      }`,
+      { id: normalizeProductGid(productId) }
+    );
+
+    if (!result.product) throw new ShopifyClientError("Product not found");
+    const edges = result.product.variants.edges;
+    if (edges.length === 0) throw new ShopifyClientError("Product has no variants");
+    if (edges.length >= 2) throw new ShopifyClientError("Product has multiple variants — Variant ID required");
+    return edges[0]!.node.id;
+  }
+
   async resolveHandleToProductId(handle: string): Promise<string> {
     const result = await this.graphql<{
       product: { id: string } | null;
@@ -192,6 +206,33 @@ export class ShopifyClient {
       throw new ShopifyClientError("Handle not found");
     }
     return result.product.id;
+  }
+
+  async createVariants(productId: string, variants: Array<{ sku?: string; price?: string; compareAtPrice?: string; cost?: string }>): Promise<UpdateVariantsResult> {
+    const normalizedVariants = variants.map((v) => {
+      const input: Record<string, unknown> = {};
+      if (v.price !== undefined) input["price"] = v.price;
+      if (v.compareAtPrice !== undefined) input["compareAtPrice"] = v.compareAtPrice;
+      const inventoryItem: Record<string, string> = {};
+      if (v.sku !== undefined) inventoryItem["sku"] = v.sku;
+      if (v.cost !== undefined) inventoryItem["cost"] = v.cost;
+      if (Object.keys(inventoryItem).length > 0) input["inventoryItem"] = inventoryItem;
+      return input;
+    });
+
+    const result = await this.graphql<{
+      productVariantsBulkCreate: UpdateVariantsResult;
+    }>(
+      `mutation productVariantsBulkCreate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+        productVariantsBulkCreate(productId: $productId, variants: $variants) {
+          productVariants { id }
+          userErrors { field message }
+        }
+      }`,
+      { productId, variants: normalizedVariants }
+    );
+
+    return result.productVariantsBulkCreate;
   }
 
   private async graphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {

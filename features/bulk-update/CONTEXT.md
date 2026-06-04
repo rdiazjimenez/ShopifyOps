@@ -30,10 +30,10 @@ Key columns — variant: `Handle`, `ID`, `Variant ID`, `Variant SKU`, `Command`,
 
 `ID` is the Shopify Product ID (numeric or full GID). Used as a product-path lookup key when no variant identifier is present.
 
-When `Variant ID` is present, `Variant SKU` is treated as a field to update on that variant. When `Variant ID` is absent, `Variant SKU` is treated as the fallback lookup key.
+When `Variant ID` is present, `Variant SKU` is treated as a field to update on that variant. When `Variant ID` is absent and `Command` is not `NEW`, `Variant SKU` is treated as the fallback lookup key. When `Command` is `NEW` and `Variant ID` is absent, `Variant SKU` is treated as a field to set on the new variant (not a lookup key).
 
 ### Command
-Per-row instruction column (Matrixify format). `UPDATE`: update if found, fail if not found. `MERGE`: update if found, fail if not found (create is out of scope). Other values (`NEW`, `DELETE`, `REPLACE`, `IGNORE`, unknown) → row skipped.
+Per-row instruction column (Matrixify format). `UPDATE`: update if found, fail if not found. `MERGE`: update if found, fail if not found. `NEW`: create a new variant on the product identified by Handle or Product ID — requires at least one variant field; fails with `"NEW command requires at least one variant field"` if no variant fields present; uses `productVariantsBulkCreate`. Blank cell: treated as `MERGE` (matches Matrixify's default). Other values (`DELETE`, `REPLACE`, `IGNORE`, unknown) → row skipped.
 
 ### Product Fields
 The set of product-level fields updated by a Bulk Operation via a single `productUpdate` mutation. Tier 1 (in scope): `Title`, `Body HTML` (`descriptionHtml`), `Vendor`, `Type` (`productType`), `Tags`, `Status`. Tier 2+ (out of scope: Published/channel visibility, Images, Collections, Category, Options, Metafields).
@@ -61,11 +61,13 @@ The identifier used to match an Excel row to a Shopify record. Two resolution pa
 
 **Product-path** (resolves to productId only, no variant): used only when no variant-level identifier is present.
 - `ID` (Product ID) — takes precedence over Handle.
-- `Handle` — last resort before failure.
+- `Handle` — last resort before failure. Empty or whitespace-only Handle is treated as absent — fails with `"no lookup key"`.
 
 Full priority chain: Variant ID → SKU → Product ID → Handle → fail `"no lookup key"`.
 
-A row on the product-path that carries variant fields (price, compareAtPrice, cost) fails with reason `"variant lookup key required for variant fields"` — no variant can be inferred from a product-level identifier alone.
+**`NEW` command exception**: For `NEW` rows, `Variant SKU` is never used as a lookup key. The priority chain collapses to Product ID → Handle → fail `"no lookup key"`. Variant fields (including `Variant SKU`) become create inputs, not lookup keys.
+
+A row on the product-path with `UPDATE`/`MERGE` command that carries variant fields (price, compareAtPrice, cost): if the product has exactly one variant, the system auto-resolves that variant ID via `resolveProductToSingleVariantId` and proceeds as a variant-path row. If the product has multiple variants, fails with `"Product has multiple variants — Variant ID required"`. With `NEW` command, variant fields are allowed and trigger `productVariantsBulkCreate`.
 
 ### Shopify API
 Shopify Admin GraphQL API, version `2026-04`. Pinned in the Shopify Client Module (`shopify-client.ts`) and `wrangler.toml`. Do not use `unstable` or `latest`. Required scopes: `write_products`, `read_products`, `write_inventory`, `read_inventory`. `write_inventory` is needed because cost is stored on `InventoryItem` and updated via `inventoryItem.cost` inside `productVariantsBulkUpdate`.
@@ -80,12 +82,18 @@ A UI layer that lets a user upload an Excel Workbook, select a sheet from a drop
 |---|---|---|---|
 | `worker/` | Headless — triggered via curl/HTTP | `X-Api-Key` header | `shopifyops-bulk-update` |
 | `frontend-pages/` | Cloudflare Pages + Cloudflare Access | Google SSO (single merchant) | `shopifyops-bulk-update-ui` |
-| `frontend-shopify-app/` | Shopify Admin embedded app | Shopify session token | — |
+| `frontend-shopify-app/` | Shopify Admin embedded app | Shopify session token | Vercel |
 
 Flavors share the same `worker/` backend. Developed independently; each merges to `main` when complete.
 
 ### Pages Function
 A server-side Cloudflare Pages Function (`frontend-pages/functions/api/bulk-update.js`) that proxies requests from the frontend to the worker. Adds the `X-Api-Key` header from the `API_KEY` Pages secret. The worker URL is set via `WORKER_URL` environment variable on the Pages project. The `API_KEY` is never sent to the browser.
+
+### Shopify App Action
+A React Router `action` function inside `frontend-shopify-app/` that proxies multipart upload requests to the worker. Mirrors the Pages Function pattern: injects `X-Api-Key` from `API_KEY` env var, forwards `sheet` and `dryRun` query params, streams worker response back to the client. `WORKER_URL` and `API_KEY` are Vercel environment variables. Session validation (Shopify session token) is handled by `@shopify/shopify-app-remix` before the proxy executes.
+
+### Shopify Embedded App
+The `frontend-shopify-app/` flavor. A React Router app scaffolded from the Shopify React Router template, hosted on Vercel. Registered as a **custom distribution app** in Shopify Partners (single-store, no App Review). Uses Polaris components and App Bridge for native Admin chrome. Session storage via Prisma + Vercel Postgres (Neon free tier). Scopes: `read_products`, `write_products`, `read_inventory`, `write_inventory`. Excel sheet-name preview and annotated workbook download are both client-side via SheetJS npm package.
 
 ### Annotated Workbook
 The downloaded output of a Bulk Operation via the Frontend. A copy of the uploaded Excel Workbook with two columns appended to the processed sheet (`Status`, `Reason`) and a new `Results` sheet containing the summary counts. Generated client-side from the Result Report.

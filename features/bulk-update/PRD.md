@@ -8,7 +8,7 @@ Updating prices, compare-at prices, and costs across hundreds of Shopify variant
 
 A Cloudflare Worker (TypeScript) that accepts an Excel Workbook upload and a sheet name, parses each row using Matrixify-compatible column format, and applies the changes to Shopify via the Admin GraphQL API. The worker returns a Result Report detailing per-row outcomes (success, failed, skipped). An optional dry-run mode lets users validate changes before committing them.
 
-Triggered via a dedicated Frontend (Cloudflare Pages + Cloudflare Access) or directly via HTTP for headless integrations. The frontend lets the merchant upload a workbook, select a sheet, toggle dry-run, view results, and download an Annotated Workbook.
+Three frontend flavors share the same worker backend: **Cloudflare Pages + Access** (browser UI, Google SSO), **Shopify Admin embedded app** (Polaris UI inside Shopify Admin, Shopify session auth, hosted on Vercel), and **headless HTTP** (curl/API, `X-Api-Key` only). Each flavor lets the merchant upload a workbook, select a sheet, toggle dry-run, view results, and download an Annotated Workbook.
 
 ## User Stories
 
@@ -25,7 +25,7 @@ Triggered via a dedicated Frontend (Cloudflare Pages + Cloudflare Access) or dir
 9. As a merchant, I want empty cells in my workbook to be ignored, so that I can include only the fields I want to change without accidentally blanking other fields.
 10. As a merchant, I want rows with `Command = UPDATE` to fail if the variant is not found, so that I know when my lookup keys are stale.
 11. As a merchant, I want rows with `Command = MERGE` to update existing variants and fail if not found (create is out of scope), so that I have a mode that still surfaces missing variants.
-12. As a merchant, I want rows with unsupported Command values counted as skipped, so that I can use my full Matrixify workbook without stripping unsupported rows first.
+12. As a merchant, I want rows with unsupported Command values (`DELETE`, `REPLACE`, `IGNORE`, and other unknown values) counted as skipped, so that I can use my full Matrixify workbook without stripping those rows first.
 13. As a merchant, I want to open a browser UI, upload my workbook, and see results without writing code or using curl, so that I can operate the tool independently.
 14. As a merchant, I want to download an Annotated Workbook after the operation with Status and Reason per row plus a Results summary sheet, so that I have a record and can fix failures in the same file.
 15. As a merchant, I want the worker to handle hundreds of rows within a reasonable time, so that large catalogue updates don't time out.
@@ -63,14 +63,7 @@ Worker checks `X-Api-Key` header against CF secret `API_KEY`. Returns HTTP 401 o
 Accepts raw Excel file bytes and a sheet name. Returns an array of parsed rows (typed records). Column header matching is case-insensitive and whitespace-trimmed. Duplicate headers: last column wins. No Shopify knowledge.
 
 ### Shopify Client Module
-Wraps Shopify Admin GraphQL API (version `2026-04`). Exposes:
-- `updateVariants(productId, variants[{ id, sku?, price?, compareAtPrice?, cost? }])` — single `productVariantsBulkUpdate` mutation. SKU and cost are passed via `inventoryItem: { sku?: <value>, cost?: <value> }` nested in the variant input. Omitted fields are not sent.
-- `updateProduct(productId, input{ title?, descriptionHtml?, vendor?, productType?, tags?, status? })` — single `productUpdate` mutation. Only non-undefined fields included. Surfaces `userErrors`.
-- `resolveVariantToProductId(variantGid)` → `productId` — queries `productVariant(id:) { product { id } }`; throws typed error if variant not found (`"Variant not found"`).
-- `resolveSkuToIds(sku)` → `{ variantId, productId }` — uses `first: 2`; throws typed error on 0 results (`"SKU not found"`) or 2+ results (`"SKU matches multiple variants"`).
-- `resolveHandleToProductId(handle)` → `productId` — queries `productByHandle`; throws typed error on null result (`"Handle not found"`).
-
-No Excel knowledge. No separate `inventoryItemUpdate` mutation.
+Wraps Shopify Admin GraphQL API (version `2026-04`). Responsibilities: update variants (price, compareAtPrice, cost, sku) in a single `productVariantsBulkUpdate` mutation per product group; update product fields via `productUpdate`; create new variants via `productVariantsBulkCreate`; resolve Variant ID / SKU / Handle / Product ID to internal IDs; surface typed errors for not-found and ambiguous-SKU cases. Omitted fields are never sent. No Excel knowledge. No separate `inventoryItemUpdate` mutation — cost travels via `inventoryItem.cost` inside the bulk variant mutation.
 
 ### Cost Mutation Approach
 Cost is updated via `inventoryItem { cost }` nested inside `productVariantsBulkUpdate` — not via a separate `inventoryItemUpdate` call. This keeps price and cost in one mutation per product group, reducing API calls. Confirmed against Shopify `ProductVariantsBulkInput` schema which exposes `inventoryItem.cost`.
@@ -92,7 +85,7 @@ Orchestrates a single row: resolves Lookup Key → dispatches fields to Shopify 
 
 Resolution paths:
 - Variant-path (Variant ID or SKU present) → resolves `(variantId, productId)`; eligible for both `productVariantsBulkUpdate` and `productUpdate`.
-- Product-path (Product ID or Handle present, no variant identifier) → resolves `(productId only)`; eligible for `productUpdate` only. Fails immediately if any variant field is present.
+- Product-path (Product ID or Handle present, no variant identifier) → resolves `(productId only)`; eligible for `productUpdate`. With `UPDATE`/`MERGE` + variant fields: auto-resolve if single variant, fail if multiple. With `NEW`: variant fields become create inputs, dispatched via `productVariantsBulkCreate`.
 
 No-op rows (valid lookup key + command, but no variant fields AND no product fields) → `skipped`, reason `"no fields to update"`.
 
@@ -101,10 +94,11 @@ No-op rows (valid lookup key + command, but no variant fields AND no product fie
 |---|---|
 | `UPDATE` | Update if found; fail if not found |
 | `MERGE` | Update if found; fail if not found (create is out of scope) |
-| `NEW`, `DELETE`, `REPLACE`, `IGNORE`, other | Skip row |
+| `NEW` | Create new variant under the product identified by Product ID or Handle. `Variant SKU` is a field to set on the new variant — not a lookup key. Product must exist; no product creation. Uses `productVariantsBulkCreate`. Fail if no product lookup key (`"no lookup key"`). |
+| `DELETE`, `REPLACE`, `IGNORE`, other | Skip row |
 
 ### Batch Orchestrator
-Groups rows by product → one `updateVariants` call per product. Collects outcomes into Result Report.
+Groups rows by product. Per product group: one `productVariantsBulkUpdate` call for `UPDATE`/`MERGE` variant rows; one `productVariantsBulkCreate` call for `NEW` rows; one `productUpdate` call if product fields present (First-Row only). Collects outcomes into Result Report.
 
 ### Result Report Shape
 ```typescript
@@ -130,7 +124,11 @@ Groups rows by product → one `updateVariants` call per product. Collects outco
 4. None of the above, `Handle` present → call `resolveHandleToProductId(handle)`. Resolves to **(productId only)**.
 5. No identifier present → fail row with reason `"no lookup key"`.
 
-**Product-path validation:** if a row resolves via path 3 or 4 (productId only) but carries any variant field (`Variant Price`, `Variant Compare At Price`, `Variant Cost`, or `Variant SKU` when used as a replacement — i.e. `Variant ID` is present context does not apply here, but `Variant SKU` on a product-path row has no variant to update) → fail row with reason `"variant lookup key required for variant fields"`. Specifically: any of `price`, `compareAtPrice`, `cost`, or `sku` present on a product-path row triggers this failure.
+**Product-path + variant fields:** if a row resolves via path 3 or 4 (productId only, `Command` is `UPDATE`/`MERGE`) and carries variant fields (`Variant Price`, `Variant Compare At Price`, `Variant Cost`, or `Variant SKU`):
+- Product has **exactly one variant** → auto-resolve that variant via `resolveProductToSingleVariantId`; proceed as a variant-path row.
+- Product has **two or more variants** → fail row with reason `"Product has multiple variants — Variant ID required"`.
+
+`NEW` command exception: variant fields on a `NEW` product-path row are create inputs, not subject to this rule.
 
 SKU update semantics:
 - `Variant ID` present + `Variant SKU` present → update that variant's SKU to the `Variant SKU` value.
@@ -148,7 +146,7 @@ Shopify stores SKU on the variant's InventoryItem, so the mutation sends SKU as 
 | `Variant ID` | Variant GID (normalize from numeric) — variant-path lookup key |
 | `Variant SKU` | SKU update when `Variant ID` present; variant-path lookup when absent |
 
-**Variant fields** (require a variant identifier; ignored on product-path rows)
+**Variant fields** (variant-path, single-variant product-path, or `NEW` create inputs)
 | Excel Column | Shopify Field |
 |---|---|
 | `Variant Price` | `price` on Variant |
@@ -173,22 +171,36 @@ Frontend capabilities: file picker, sheet dropdown (populated client-side from u
 
 Annotated Workbook: generated client-side after response — original sheet with `Status` and `Reason` columns appended, plus a new `Results` sheet with summary counts.
 
+### Frontend (Shopify Admin Embedded App)
+React Router app hosted on Vercel, embedded inside Shopify Admin via a custom distribution app registered in Shopify Partners (single store, no App Review). Polaris components + App Bridge provide native Admin chrome. `@shopify/shopify-app-remix` handles OAuth and session token validation. Sessions stored in Vercel Postgres (Neon free tier) via Prisma.
+
+The React Router `action` validates the Shopify session, then proxies the multipart POST to the worker — injecting `X-Api-Key` from `API_KEY` Vercel env var and forwarding `sheet` and `dryRun` query params. Worker response is streamed back to the client unchanged. `API_KEY` is never sent to the browser. All product logic remains in the worker.
+
+Same UI capabilities as the Pages flavor: file picker, client-side sheet dropdown (SheetJS npm package), dry-run toggle, submit, loading state, Result Report display, client-side Annotated Workbook download.
+
 ## Acceptance Criteria
 
 - **Auth:** Request without `X-Api-Key` returns 401. Wrong key returns 401. Correct key proceeds.
 - **Missing sheet:** Sheet name not found in workbook returns 400 with descriptive error.
 - **Dry run:** `?dryRun=true` returns Result Report with zero mutations sent to Shopify.
-- **Skipped commands:** Rows with `Command = NEW/DELETE/REPLACE/IGNORE` appear in `rows[]` with `status: "skipped"`.
+- **Skipped commands:** Rows with `Command = DELETE/REPLACE/IGNORE` appear in `rows[]` with `status: "skipped"`. No lookup or API call is made.
+- **NEW — creates variant:** Row with `Command = NEW` and a valid Product ID or Handle creates a new variant via `productVariantsBulkCreate`; `Variant SKU` is set as a field on the new variant, not used as a lookup key.
+- **NEW — no product key:** Row with `Command = NEW` and no Product ID and no Handle fails with reason `"no lookup key"`.
+- **NEW — SKU not used as lookup:** Row with `Command = NEW`, no Product ID, no Handle, but a `Variant SKU` value fails with `"no lookup key"` — SKU is never a lookup key for `NEW` rows.
 - **Duplicate SKU:** SKU matching 2+ variants fails that row with reason `"SKU matches multiple variants"`.
 - **Missing lookup key:** Row with no Variant ID, no SKU, no Product ID, and no Handle fails with reason `"no lookup key"`.
 - **Product-path lookup:** Row with Product ID (no variant identifier) resolves to productId only; `productUpdate` fires, `productVariantsBulkUpdate` skipped.
 - **Handle lookup:** Row with Handle (no variant identifier, no Product ID) resolves to productId only via `resolveHandleToProductId`; `productUpdate` fires, `productVariantsBulkUpdate` skipped.
 - **Handle not found:** Row with Handle that does not exist in Shopify fails with reason `"Handle not found"`.
-- **Variant fields on product-path:** Row with only Handle or Product ID (no variant identifier) that carries any of `Variant Price`, `Variant Compare At Price`, `Variant Cost`, or `Variant SKU` fails with reason `"variant lookup key required for variant fields"`.
-- **Command checked before lookup:** Rows with unsupported `Command` values (`NEW`, `DELETE`, `REPLACE`, `IGNORE`, unknown) are skipped immediately — no lookup or API call is made. A row with `Command = NEW` and a non-existent Handle appears as `skipped`, not `failed "Handle not found"`.
+- **Variant fields on product-path — single variant:** Row with only Handle or Product ID (no variant identifier, `UPDATE`/`MERGE` command) that carries variant fields and the product has exactly one variant → auto-resolved; processes as variant-path row.
+- **Variant fields on product-path — multiple variants:** Same scenario but product has two or more variants → fails with reason `"Product has multiple variants — Variant ID required"`.
+- **Command checked before lookup:** Rows with `DELETE`, `REPLACE`, `IGNORE`, or unknown `Command` values are skipped immediately — no lookup or API call is made.
 - **Grouped mutation:** Variants belonging to the same product are sent in one `productVariantsBulkUpdate` call, not one call per variant.
 - **Partial/userErrors:** Shopify `userErrors` on a product group marks all variants in that group as failed; other product groups are unaffected.
 - **Combined mutation result:** When both `productUpdate` and `productVariantsBulkUpdate` fire for a product group, strictest outcome wins: if either returns `userErrors`, all rows in the group are `failed` with reasons concatenated.
+- **Shopify app — unauthenticated rejected:** Request to the React Router action without a valid Shopify session is rejected; worker is never called.
+- **Shopify app — proxy injects key:** Valid Shopify session results in request forwarded to worker with `X-Api-Key` header set from `API_KEY` env var.
+- **Shopify app — key never exposed:** `API_KEY` value does not appear in any response body, client bundle, or browser-visible header.
 - **Result Report invariants:** `total === succeeded + failed + skipped` and `rows.length === total` in all cases.
 - **SKU update:** Row with `Variant ID` and `Variant SKU` updates the variant's SKU.
 - **No-op row:** Row with valid command and lookup key but no variant fields (price, compareAtPrice, cost, sku) AND no product fields (title, bodyHtml, vendor, type, tags, status) appears as `skipped`, reason `"no fields to update"`.
@@ -198,13 +210,15 @@ Annotated Workbook: generated client-side after response — original sheet with
 
 Good tests verify external behavior only — given an Excel file (or parsed rows) and a stubbed Shopify API, the correct mutations are called and the correct Result Report is returned. Tests should not assert on internal module calls or implementation sequence.
 
+**Behavioral boundary for Shopify Client stubs:** mutation methods (`updateVariants`, `updateProduct`, `createVariants`, `fetchProductTags`) are observable external behavior — asserting on them is permitted. Lookup/resolution methods (`resolveVariantToProductId`, `resolveSkuToIds`, `resolveHandleToProductId`, `resolveProductToSingleVariantId`) are internal implementation details — do not assert on whether or how they are called. Test the result shape (`type`, `productId`, `lookupKey`, `variantInput`, `productPath`) instead.
+
 ### Modules to test
 
 **Excel Parsing Module** — unit tested with fixture `.xlsx` files. Assert: correct row extraction, empty-cell skipping, unsupported Command skipping, missing sheet error, case-insensitive + trimmed header matching, duplicate header handling.
 
 **Shopify Client Module** — unit tested with stubbed HTTP layer. Assert: single mutation carries sku + price + compareAtPrice + cost; omitted fields absent from variables; `userErrors` mapped correctly; SKU not found and SKU ambiguous both throw typed errors; numeric IDs normalized to GIDs.
 
-**Row Processor Module** — unit tested with stubbed Shopify Client. Assert: Variant ID takes precedence over SKU; no-op row returns `skipped`; UPDATE/MERGE both fail when variant not found; correct shape returned.
+**Row Processor Module** — unit tested with stubbed Shopify Client. Assert: Variant ID takes precedence over SKU; no-op row returns `skipped`; UPDATE/MERGE both fail when variant not found; `NEW` command dispatches create and ignores SKU as lookup key; single-variant auto-resolve promotes product-path row to variant-path; correct shape returned.
 
 **Batch Orchestrator** — integration tested with stubbed Shopify Client and real Excel fixture. Assert: grouping by product; dry-run sends zero mutations; `rows.length === total`; `status` correct per outcome; `reason` present on failed/skipped, absent on success.
 
@@ -212,16 +226,17 @@ Prior art: `excel-parser.test.ts`, `shopify-client.test.ts`, `row-processor.test
 
 ## Out of Scope
 
-- CREATE operations (new products or variants)
+- New product creation (variants only via `Command = NEW`)
 - DELETE operations
 - REPLACE operations
 - Inventory quantity updates
 - Image updates
 - Metafield updates
+- Channel visibility / publication updates
 - Multi-store support
 - Money format validation (delegated to Shopify; invalid formats return `userErrors`)
 - Chunking / streaming for very large batches (revisit if hit in practice)
-- Shopify Admin embedded app frontend flavor (separate PRD)
+- Shopify Admin embedded app is in scope as UI/proxy only — product logic remains in the worker
 
 ## Further Notes
 
