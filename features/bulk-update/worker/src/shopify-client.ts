@@ -45,10 +45,12 @@ export class ShopifyClient {
   async updateVariants(productId: string, variants: VariantInput[]): Promise<UpdateVariantsResult> {
     const normalizedVariants = variants.map((v) => {
       const input: Record<string, unknown> = { id: normalizeVariantGid(v.id) };
-      if (v.sku !== undefined) input["sku"] = v.sku;
       if (v.price !== undefined) input["price"] = v.price;
       if (v.compareAtPrice !== undefined) input["compareAtPrice"] = v.compareAtPrice;
-      if (v.cost !== undefined) input["inventoryItem"] = { cost: v.cost };
+      const inventoryItem: Record<string, string> = {};
+      if (v.sku !== undefined) inventoryItem["sku"] = v.sku;
+      if (v.cost !== undefined) inventoryItem["cost"] = v.cost;
+      if (Object.keys(inventoryItem).length > 0) input["inventoryItem"] = inventoryItem;
       return input;
     });
 
@@ -57,7 +59,7 @@ export class ShopifyClient {
     }>(
       `mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
         productVariantsBulkUpdate(productId: $productId, variants: $variants) {
-          productVariants { id sku price compareAtPrice inventoryItem { id unitCost { amount } } }
+          productVariants { id price compareAtPrice inventoryItem { id sku unitCost { amount } } }
           userErrors { field message }
         }
       }`,

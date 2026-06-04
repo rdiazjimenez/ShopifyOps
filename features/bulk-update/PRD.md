@@ -63,7 +63,7 @@ Accepts raw Excel file bytes and a sheet name. Returns an array of parsed rows (
 
 ### Shopify Client Module
 Wraps Shopify Admin GraphQL API (version `2026-04`). Exposes:
-- `updateVariants(productId, variants[{ id, sku?, price?, compareAtPrice?, cost? }])` — single `productVariantsBulkUpdate` mutation. Cost is passed via `inventoryItem: { cost: <value> }` nested in the variant input. Omitted fields are not sent.
+- `updateVariants(productId, variants[{ id, sku?, price?, compareAtPrice?, cost? }])` — single `productVariantsBulkUpdate` mutation. SKU and cost are passed via `inventoryItem: { sku?: <value>, cost?: <value> }` nested in the variant input. Omitted fields are not sent.
 - `resolveSkuToIds(sku)` → `{ variantId, productId }` — uses `first: 2`; throws typed error on 0 results (`"SKU not found"`) or 2+ results (`"SKU matches multiple variants"`).
 
 No Excel knowledge. No separate `inventoryItemUpdate` mutation.
@@ -121,6 +121,7 @@ Groups rows by product → one `updateVariants` call per product. Collects outco
 SKU update semantics:
 - `Variant ID` present + `Variant SKU` present → update that variant's SKU to the `Variant SKU` value.
 - `Variant ID` absent + `Variant SKU` present → use `Variant SKU` only as lookup key.
+Shopify stores SKU on the variant's InventoryItem, so the mutation sends SKU as `inventoryItem.sku`.
 
 ### Matrixify Column Mapping
 | Excel Column | Shopify Field |

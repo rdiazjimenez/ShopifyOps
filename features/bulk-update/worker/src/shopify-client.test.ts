@@ -41,13 +41,13 @@ describe("ShopifyClient endpoint", () => {
 });
 
 describe("ShopifyClient.updateVariants", () => {
-  it("sends sku in mutation variables", async () => {
+  it("sends sku in inventoryItem mutation variables", async () => {
     const fetchFn = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
           data: {
             productVariantsBulkUpdate: {
-              productVariants: [{ id: VARIANT_GID, sku: "NEW-SKU" }],
+              productVariants: [{ id: VARIANT_GID, inventoryItem: { id: "gid://shopify/InventoryItem/333", sku: "NEW-SKU" } }],
               userErrors: [],
             },
           },
@@ -60,7 +60,7 @@ describe("ShopifyClient.updateVariants", () => {
     await client.updateVariants(PRODUCT_GID, [{ id: VARIANT_GID, sku: "NEW-SKU" }]);
 
     const body = JSON.parse(fetchFn.mock.calls[0][1].body as string);
-    expect(body.variables.variants[0].sku).toBe("NEW-SKU");
+    expect(body.variables.variants[0].inventoryItem.sku).toBe("NEW-SKU");
     expect(body.query).toContain("sku");
   });
 
