@@ -82,12 +82,18 @@ A UI layer that lets a user upload an Excel Workbook, select a sheet from a drop
 |---|---|---|---|
 | `worker/` | Headless — triggered via curl/HTTP | `X-Api-Key` header | `shopifyops-bulk-update` |
 | `frontend-pages/` | Cloudflare Pages + Cloudflare Access | Google SSO (single merchant) | `shopifyops-bulk-update-ui` |
-| `frontend-shopify-app/` | Shopify Admin embedded app | Shopify session token | — |
+| `frontend-shopify-app/` | Shopify Admin embedded app | Shopify session token | Vercel |
 
 Flavors share the same `worker/` backend. Developed independently; each merges to `main` when complete.
 
 ### Pages Function
 A server-side Cloudflare Pages Function (`frontend-pages/functions/api/bulk-update.js`) that proxies requests from the frontend to the worker. Adds the `X-Api-Key` header from the `API_KEY` Pages secret. The worker URL is set via `WORKER_URL` environment variable on the Pages project. The `API_KEY` is never sent to the browser.
+
+### Shopify App Action
+A React Router `action` function inside `frontend-shopify-app/` that proxies multipart upload requests to the worker. Mirrors the Pages Function pattern: injects `X-Api-Key` from `API_KEY` env var, forwards `sheet` and `dryRun` query params, streams worker response back to the client. `WORKER_URL` and `API_KEY` are Vercel environment variables. Session validation (Shopify session token) is handled by `@shopify/shopify-app-remix` before the proxy executes.
+
+### Shopify Embedded App
+The `frontend-shopify-app/` flavor. A React Router app scaffolded from the Shopify React Router template, hosted on Vercel. Registered as a **custom distribution app** in Shopify Partners (single-store, no App Review). Uses Polaris components and App Bridge for native Admin chrome. Session storage via Prisma + Vercel Postgres (Neon free tier). Scopes: `read_products`, `write_products`, `read_inventory`, `write_inventory`. Excel sheet-name preview and annotated workbook download are both client-side via SheetJS npm package.
 
 ### Annotated Workbook
 The downloaded output of a Bulk Operation via the Frontend. A copy of the uploaded Excel Workbook with two columns appended to the processed sheet (`Status`, `Reason`) and a new `Results` sheet containing the summary counts. Generated client-side from the Result Report.
