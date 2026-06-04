@@ -13,7 +13,7 @@ export interface ProductFields {
 }
 
 export type ProcessedRow =
-  | { type: "pending"; row: number; lookupKey: string; productId: string; variantInput: VariantInput; productFields?: ProductFields }
+  | { type: "pending"; row: number; lookupKey: string; productId: string; variantInput: VariantInput; productFields?: ProductFields; productPath?: true }
   | { type: "failed"; row: number; lookupKey: string; reason: string }
   | { type: "skipped"; row: number; lookupKey: string; reason: string };
 
@@ -22,7 +22,7 @@ export async function processRow(row: ParsedRow, client: ShopifyClient): Promise
     return { type: "skipped", row: row.row, lookupKey: "", reason: row.reason };
   }
 
-  const { row: rowNum, command, variantId, sku, newSku, price, compareAtPrice, cost, title, bodyHtml, vendor, productType, status, tags, tagsCommand } = row;
+  const { row: rowNum, command, variantId, sku, productId: rawProductId, newSku, price, compareAtPrice, cost, title, bodyHtml, vendor, productType, status, tags, tagsCommand } = row;
 
   // A row is valid if it has at least one variant field OR at least one product field.
   // The First-Row Rule (only first row of each product carries product fields) is enforced by the Batch Orchestrator.
@@ -30,12 +30,12 @@ export async function processRow(row: ParsedRow, client: ShopifyClient): Promise
   const hasProductFields = !!(title || bodyHtml || vendor || productType || status || tags);
 
   if (!hasVariantFields && !hasProductFields) {
-    return { type: "skipped", row: rowNum, lookupKey: variantId ?? sku ?? "", reason: "no fields to update" };
+    return { type: "skipped", row: rowNum, lookupKey: variantId ?? sku ?? rawProductId ?? "", reason: "no fields to update" };
   }
 
   let resolvedVariantId: string;
   let resolvedProductId: string;
-  const lookupKey = variantId ?? sku ?? "";
+  const lookupKey = variantId ?? sku ?? rawProductId ?? "";
 
   if (variantId) {
     resolvedVariantId = variantId.startsWith("gid://") ? variantId : `gid://shopify/ProductVariant/${variantId}`;
@@ -54,6 +54,44 @@ export async function processRow(row: ParsedRow, client: ShopifyClient): Promise
       const reason = err instanceof ShopifyClientError ? err.message : "SKU lookup failed";
       return { type: "failed", row: rowNum, lookupKey, reason };
     }
+  } else if (rawProductId) {
+    // Product-path lookup: Product ID present, no variant identifier (Variant ID or SKU)
+    // Validate: variant fields are not allowed on the product-path
+    if (hasVariantFields) {
+      return { type: "failed", row: rowNum, lookupKey: rawProductId, reason: "variant lookup key required for variant fields" };
+    }
+    // Normalize Product ID to GID (no API call required)
+    let normalizedProductId: string;
+    if (rawProductId.startsWith("gid://")) {
+      if (!/^gid:\/\/shopify\/Product\/\d+$/.test(rawProductId)) {
+        return { type: "failed", row: rowNum, lookupKey: rawProductId, reason: `Invalid Product GID: "${rawProductId}"` };
+      }
+      normalizedProductId = rawProductId;
+    } else {
+      normalizedProductId = `gid://shopify/Product/${rawProductId}`;
+    }
+
+    const productFieldsObj: ProductFields = {};
+    if (title !== undefined) productFieldsObj.title = title;
+    if (bodyHtml !== undefined) productFieldsObj.bodyHtml = bodyHtml;
+    if (vendor !== undefined) productFieldsObj.vendor = vendor;
+    if (productType !== undefined) productFieldsObj.productType = productType;
+    if (status !== undefined) productFieldsObj.status = status;
+    if (tags !== undefined) productFieldsObj.tags = tags;
+    if (tagsCommand !== undefined) productFieldsObj.tagsCommand = tagsCommand;
+
+    const productPathPending: ProcessedRow & { type: "pending" } = {
+      type: "pending",
+      row: rowNum,
+      lookupKey: rawProductId,
+      productId: normalizedProductId,
+      variantInput: { id: normalizedProductId }, // sentinel — never passed to updateVariants for product-path rows
+      productPath: true,
+    };
+    if (hasProductFields) {
+      productPathPending.productFields = productFieldsObj;
+    }
+    return productPathPending;
   } else {
     return { type: "failed", row: rowNum, lookupKey: "", reason: "no lookup key" };
   }

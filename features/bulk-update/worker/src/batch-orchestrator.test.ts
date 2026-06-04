@@ -625,3 +625,133 @@ describe("runBatch — Tags MERGE and REPLACE (Slice 3)", () => {
     expect(fetchProductTags).not.toHaveBeenCalled();
   });
 });
+
+describe("runBatch — product-path Product ID rows (Issue #32)", () => {
+  it("product-path row: productUpdate fires, updateVariants not called", async () => {
+    const updateVariants = vi.fn().mockResolvedValue({ productVariants: [], userErrors: [] });
+    const updateProduct = vi.fn().mockResolvedValue({ product: { id: PRODUCT_A }, userErrors: [] });
+    const client = makeClient({ updateVariants, updateProduct });
+
+    const rows = [
+      { skipped: false as const, row: 1, command: "UPDATE" as const, productId: "111", title: "New Title" },
+    ];
+
+    const report = await runBatch(rows, client, false);
+    expect(updateVariants).not.toHaveBeenCalled();
+    expect(updateProduct).toHaveBeenCalledTimes(1);
+    expect(report.succeeded).toBe(1);
+  });
+
+  it("product-path row: lookupKey in Result Report equals the Product ID value", async () => {
+    const client = makeClient({
+      updateProduct: vi.fn().mockResolvedValue({ product: { id: PRODUCT_A }, userErrors: [] }),
+    });
+
+    const rows = [
+      { skipped: false as const, row: 1, command: "UPDATE" as const, productId: "111", title: "T" },
+    ];
+
+    const report = await runBatch(rows, client, false);
+    expect(report.rows[0]?.lookupKey).toBe("111");
+  });
+
+  it("duplicate product-path row (same productId, no variant fields) → second skipped 'duplicate product row'", async () => {
+    const updateProduct = vi.fn().mockResolvedValue({ product: { id: PRODUCT_A }, userErrors: [] });
+    const client = makeClient({ updateProduct });
+
+    const rows = [
+      { skipped: false as const, row: 1, command: "UPDATE" as const, productId: "111", title: "T1" },
+      { skipped: false as const, row: 2, command: "UPDATE" as const, productId: "111", vendor: "V2" },
+    ];
+
+    const report = await runBatch(rows, client, false);
+    expect(report.succeeded).toBe(1);
+    expect(report.skipped).toBe(1);
+    expect(report.rows.find(r => r.row === 2)?.reason).toBe("duplicate product row");
+    // updateProduct called once only (for first row)
+    expect(updateProduct).toHaveBeenCalledTimes(1);
+  });
+
+  it("later row for same product with Variant ID → processes variant fields normally", async () => {
+    const updateVariants = vi.fn().mockResolvedValue({ productVariants: [], userErrors: [] });
+    const updateProduct = vi.fn().mockResolvedValue({ product: { id: PRODUCT_A }, userErrors: [] });
+    const client = makeClient({
+      resolveVariantToProductId: vi.fn().mockResolvedValue(PRODUCT_A),
+      updateVariants,
+      updateProduct,
+    });
+
+    const rows = [
+      // product-path row
+      { skipped: false as const, row: 1, command: "UPDATE" as const, productId: "111", title: "T" },
+      // variant row for same product — should update variant fields
+      { skipped: false as const, row: 2, command: "UPDATE" as const, variantId: VARIANT_1, price: "9.99" },
+    ];
+
+    const report = await runBatch(rows, client, false);
+    expect(updateVariants).toHaveBeenCalledTimes(1);
+    expect(report.succeeded).toBe(2);
+  });
+
+  it("variant row before product-path row (reversed order) → both updateVariants and updateProduct fire", async () => {
+    const updateVariants = vi.fn().mockResolvedValue({ productVariants: [], userErrors: [] });
+    const updateProduct = vi.fn().mockResolvedValue({ product: { id: PRODUCT_A }, userErrors: [] });
+    const client = makeClient({
+      resolveVariantToProductId: vi.fn().mockResolvedValue(PRODUCT_A),
+      updateVariants,
+      updateProduct,
+    });
+
+    const rows = [
+      // variant row first
+      { skipped: false as const, row: 1, command: "UPDATE" as const, variantId: VARIANT_1, price: "9.99" },
+      // product-path row second for same product
+      { skipped: false as const, row: 2, command: "UPDATE" as const, productId: "111", title: "New Title" },
+    ];
+
+    const report = await runBatch(rows, client, false);
+    expect(updateVariants).toHaveBeenCalledTimes(1);
+    expect(updateProduct).toHaveBeenCalledTimes(1);
+    expect(updateProduct).toHaveBeenCalledWith(PRODUCT_A, expect.objectContaining({ title: "New Title" }));
+    expect(report.succeeded).toBe(2);
+  });
+
+  it("dry-run: product-path productUpdate suppressed; row appears as success", async () => {
+    const updateProduct = vi.fn();
+    const client = makeClient({ updateProduct });
+
+    const rows = [
+      { skipped: false as const, row: 1, command: "UPDATE" as const, productId: "111", title: "T" },
+    ];
+
+    const report = await runBatch(rows, client, true);
+    expect(updateProduct).not.toHaveBeenCalled();
+    expect(report.rows[0]?.status).toBe("success");
+    expect(report.succeeded).toBe(1);
+  });
+
+  it("product-path row with no product fields (productId + no fields) → skipped 'no fields to update'", async () => {
+    const client = makeClient();
+
+    const rows = [
+      { skipped: false as const, row: 1, command: "UPDATE" as const, productId: "111" },
+    ];
+
+    const report = await runBatch(rows, client, false);
+    expect(report.skipped).toBe(1);
+    expect(report.rows[0]?.reason).toBe("no fields to update");
+  });
+
+  it("Command=NEW with valid ID → skipped (not failed) at parser level", async () => {
+    // NEW is an unsupported command so it's skipped by the parser, not failed
+    const client = makeClient();
+
+    const rows = [
+      { skipped: true as const, row: 1, reason: "unsupported command: NEW" },
+    ];
+
+    const report = await runBatch(rows, client, false);
+    expect(report.skipped).toBe(1);
+    expect(report.rows[0]?.status).toBe("skipped");
+  });
+});
