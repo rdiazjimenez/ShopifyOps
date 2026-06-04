@@ -64,8 +64,19 @@ export async function runBatch(
       const productFields = firstRow.productFields;
 
       try {
-        // Fire productUpdate and productVariantsBulkUpdate in parallel when product fields exist
-        const variantPromise = client.updateVariants(productId, group.map((g) => g.variantInput));
+        // Fire productUpdate and productVariantsBulkUpdate in parallel when product fields exist.
+        // Skip updateVariants entirely when no row in the group carries actual variant fields —
+        // sending a mutation with only IDs is a no-op that wastes an API call.
+        const hasVariantFields = group.some(
+          (g) =>
+            g.variantInput.sku !== undefined ||
+            g.variantInput.price !== undefined ||
+            g.variantInput.compareAtPrice !== undefined ||
+            g.variantInput.cost !== undefined
+        );
+        const variantPromise = hasVariantFields
+          ? client.updateVariants(productId, group.map((g) => g.variantInput))
+          : Promise.resolve<{ productVariants: []; userErrors: [] }>({ productVariants: [], userErrors: [] });
         const productPromise = productFields
           ? client.updateProduct(productId, {
               title: productFields.title,

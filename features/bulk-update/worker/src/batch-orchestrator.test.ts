@@ -405,6 +405,25 @@ describe("runBatch — product fields (First-Row Rule + parallel mutations)", ()
     expect(report.rows[0]?.reason).toContain("Title too long");
   });
 
+  it("skips updateVariants when group has only product fields (no price/sku/cost)", async () => {
+    const updateVariants = vi.fn().mockResolvedValue({ productVariants: [], userErrors: [] });
+    const updateProduct = vi.fn().mockResolvedValue({ product: { id: PRODUCT_A }, userErrors: [] });
+    const client = makeClient({
+      resolveVariantToProductId: vi.fn().mockResolvedValue(PRODUCT_A),
+      updateVariants,
+      updateProduct,
+    });
+
+    const rows = [
+      { skipped: false as const, row: 1, command: "UPDATE" as const, variantId: VARIANT_1, title: "New Title" },
+    ];
+
+    const report = await runBatch(rows, client, false);
+    expect(updateVariants).not.toHaveBeenCalled();
+    expect(updateProduct).toHaveBeenCalledTimes(1);
+    expect(report.succeeded).toBe(1);
+  });
+
   it("dry-run does not call updateProduct", async () => {
     const updateProduct = vi.fn().mockResolvedValue({ product: { id: PRODUCT_A }, userErrors: [] });
     const client = makeClient({
