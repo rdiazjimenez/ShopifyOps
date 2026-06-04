@@ -56,6 +56,20 @@ describe("processRow — lookup key resolution", () => {
     expect(result.type).toBe("failed");
     if (result.type === "failed") expect(result.reason).toBe("no lookup key");
   });
+
+  it("empty-string Handle treated as no lookup key — fails with 'no lookup key'", async () => {
+    const client = makeClient();
+    const result = await processRow({ ...baseRow, handle: "", price: "9.99" }, client);
+    expect(result.type).toBe("failed");
+    if (result.type === "failed") expect(result.reason).toBe("no lookup key");
+  });
+
+  it("whitespace-only Handle treated as no lookup key — fails with 'no lookup key'", async () => {
+    const client = makeClient();
+    const result = await processRow({ ...baseRow, handle: "   ", price: "9.99" }, client);
+    expect(result.type).toBe("failed");
+    if (result.type === "failed") expect(result.reason).toBe("no lookup key");
+  });
 });
 
 describe("processRow — no-op row", () => {
@@ -484,5 +498,25 @@ describe("processRow - NEW command", () => {
     const result = await processRow({ ...baseRow, command: "NEW", variantId: VARIANT_GID, price: "9.99" }, client);
     expect(result.type).toBe("failed");
     if (result.type === "failed") expect(result.reason).toBe("no lookup key");
+  });
+
+  it("NEW with Product ID but no variant fields fails with 'NEW command requires at least one variant field'", async () => {
+    const client = makeClient();
+    const result = await processRow({ ...baseRow, command: "NEW", productId: "111", title: "New Product Title" }, client);
+    expect(result.type).toBe("failed");
+    if (result.type === "failed") {
+      expect(result.reason).toBe("NEW command requires at least one variant field");
+      expect(result.lookupKey).toBe("111");
+    }
+  });
+
+  it("NEW with Handle but no variant fields fails with 'NEW command requires at least one variant field'", async () => {
+    const client = makeClient();
+    const result = await processRow({ ...baseRow, command: "NEW", handle: "my-product", title: "New Product Title" }, client);
+    expect(result.type).toBe("failed");
+    if (result.type === "failed") {
+      expect(result.reason).toBe("NEW command requires at least one variant field");
+      expect(result.lookupKey).toBe("my-product");
+    }
   });
 });

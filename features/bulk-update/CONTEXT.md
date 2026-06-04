@@ -33,7 +33,7 @@ Key columns — variant: `Handle`, `ID`, `Variant ID`, `Variant SKU`, `Command`,
 When `Variant ID` is present, `Variant SKU` is treated as a field to update on that variant. When `Variant ID` is absent and `Command` is not `NEW`, `Variant SKU` is treated as the fallback lookup key. When `Command` is `NEW` and `Variant ID` is absent, `Variant SKU` is treated as a field to set on the new variant (not a lookup key).
 
 ### Command
-Per-row instruction column (Matrixify format). `UPDATE`: update if found, fail if not found. `MERGE`: update if found, fail if not found. `NEW`: create a new variant on the product identified by Handle or Product ID — requires at least one variant field; uses `productVariantsBulkCreate`. Blank cell: treated as `MERGE` (matches Matrixify's default). Other values (`DELETE`, `REPLACE`, `IGNORE`, unknown) → row skipped.
+Per-row instruction column (Matrixify format). `UPDATE`: update if found, fail if not found. `MERGE`: update if found, fail if not found. `NEW`: create a new variant on the product identified by Handle or Product ID — requires at least one variant field; fails with `"NEW command requires at least one variant field"` if no variant fields present; uses `productVariantsBulkCreate`. Blank cell: treated as `MERGE` (matches Matrixify's default). Other values (`DELETE`, `REPLACE`, `IGNORE`, unknown) → row skipped.
 
 ### Product Fields
 The set of product-level fields updated by a Bulk Operation via a single `productUpdate` mutation. Tier 1 (in scope): `Title`, `Body HTML` (`descriptionHtml`), `Vendor`, `Type` (`productType`), `Tags`, `Status`. Tier 2+ (out of scope: Published/channel visibility, Images, Collections, Category, Options, Metafields).
@@ -61,7 +61,7 @@ The identifier used to match an Excel row to a Shopify record. Two resolution pa
 
 **Product-path** (resolves to productId only, no variant): used only when no variant-level identifier is present.
 - `ID` (Product ID) — takes precedence over Handle.
-- `Handle` — last resort before failure.
+- `Handle` — last resort before failure. Empty or whitespace-only Handle is treated as absent — fails with `"no lookup key"`.
 
 Full priority chain: Variant ID → SKU → Product ID → Handle → fail `"no lookup key"`.
 

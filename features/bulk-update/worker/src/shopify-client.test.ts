@@ -420,3 +420,60 @@ describe("ShopifyClient.resolveHandleToProductId", () => {
     await expect(client.resolveHandleToProductId("any-handle")).rejects.toThrow(ShopifyClientError);
   });
 });
+
+describe("ShopifyClient.createVariants", () => {
+  const okResponse = (overrides = {}) =>
+    new Response(
+      JSON.stringify({
+        data: {
+          productVariantsBulkCreate: {
+            productVariants: [{ id: "gid://shopify/ProductVariant/999" }],
+            userErrors: [],
+            ...overrides,
+          },
+        },
+      }),
+      { headers: { "Content-Type": "application/json" } }
+    );
+
+  it("sends productVariantsBulkCreate mutation with productId and variant fields", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(okResponse());
+    const client = makeClient(fetchFn);
+
+    await client.createVariants(PRODUCT_GID, [{ sku: "NEW-SKU", price: "9.99", compareAtPrice: "14.99", cost: "3.00" }]);
+
+    const body = JSON.parse((fetchFn.mock.calls[0][1] as RequestInit).body as string);
+    expect(body.query).toContain("productVariantsBulkCreate");
+    expect(body.variables.productId).toBe(PRODUCT_GID);
+    expect(body.variables.variants).toHaveLength(1);
+    const v = body.variables.variants[0];
+    expect(v.price).toBe("9.99");
+    expect(v.compareAtPrice).toBe("14.99");
+    expect(v.inventoryItem.sku).toBe("NEW-SKU");
+    expect(v.inventoryItem.cost).toBe("3.00");
+  });
+
+  it("omits fields absent from input — no undefined keys in payload", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(okResponse());
+    const client = makeClient(fetchFn);
+
+    await client.createVariants(PRODUCT_GID, [{ price: "5.00" }]);
+
+    const body = JSON.parse((fetchFn.mock.calls[0][1] as RequestInit).body as string);
+    const v = body.variables.variants[0];
+    expect(v.price).toBe("5.00");
+    expect("compareAtPrice" in v).toBe(false);
+    expect("inventoryItem" in v).toBe(false);
+  });
+
+  it("returns userErrors from Shopify without throwing", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      okResponse({ userErrors: [{ field: ["variants", "0", "price"], message: "Price is invalid" }] })
+    );
+    const client = makeClient(fetchFn);
+
+    const result = await client.createVariants(PRODUCT_GID, [{ price: "bad" }]);
+    expect(result.userErrors).toHaveLength(1);
+    expect(result.userErrors[0]!.message).toBe("Price is invalid");
+  });
+});

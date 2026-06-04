@@ -75,7 +75,10 @@ export async function processRow(row: ParsedRow, client: ShopifyClient): Promise
     if (tags !== undefined) productFieldsObj.tags = tags;
     if (tagsCommand !== undefined) productFieldsObj.tagsCommand = tagsCommand;
 
-    if (command === "NEW" && hasVariantFields) {
+    if (command === "NEW") {
+      if (!hasVariantFields) {
+        return { type: "failed", row: rowNum, lookupKey: rawProductId, reason: "NEW command requires at least one variant field" };
+      }
       const variantInput: VariantInput = { id: normalizedProductId }; // sentinel — not used as variant GID
       if (newSku !== undefined) variantInput.sku = newSku;
       if (price !== undefined) variantInput.price = price;
@@ -115,7 +118,7 @@ export async function processRow(row: ParsedRow, client: ShopifyClient): Promise
       if (hasProductFields) productPathPending.productFields = productFieldsObj;
       return productPathPending;
     }
-  } else if (row.handle) {
+  } else if (row.handle && row.handle.trim()) {
     const handle = row.handle;
     lookupKey = handle; // update for fall-through to variant building
     let resolvedHandleProductId: string;
@@ -135,7 +138,10 @@ export async function processRow(row: ParsedRow, client: ShopifyClient): Promise
     if (tags !== undefined) productFieldsObj.tags = tags;
     if (tagsCommand !== undefined) productFieldsObj.tagsCommand = tagsCommand;
 
-    if (command === "NEW" && hasVariantFields) {
+    if (command === "NEW") {
+      if (!hasVariantFields) {
+        return { type: "failed", row: rowNum, lookupKey: handle, reason: "NEW command requires at least one variant field" };
+      }
       const variantInput: VariantInput = { id: resolvedHandleProductId }; // sentinel — not used as variant GID
       if (newSku !== undefined) variantInput.sku = newSku;
       if (price !== undefined) variantInput.price = price;
