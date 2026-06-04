@@ -26,7 +26,9 @@ Optional mode (`?dryRun=true`) where rows are validated and API calls are simula
 ### Excel Workbook
 The source of truth for bulk operation data. Follows Matrixify column format. Each row represents one Variant record and optionally carries Product Fields for the parent product. Empty cell = skip that field.
 
-Key columns — variant: `Handle`, `Variant ID`, `Variant SKU`, `Command`, `Variant Price`, `Variant Compare At Price`, `Variant Cost`. Key columns — product: `Title`, `Body HTML`, `Vendor`, `Type`, `Tags`, `Tags Command`, `Status`.
+Key columns — variant: `Handle`, `ID`, `Variant ID`, `Variant SKU`, `Command`, `Variant Price`, `Variant Compare At Price`, `Variant Cost`. Key columns — product: `Title`, `Body HTML`, `Vendor`, `Type`, `Tags`, `Tags Command`, `Status`.
+
+`ID` is the Shopify Product ID (numeric or full GID). Used as a product-path lookup key when no variant identifier is present.
 
 When `Variant ID` is present, `Variant SKU` is treated as a field to update on that variant. When `Variant ID` is absent, `Variant SKU` is treated as the fallback lookup key.
 
@@ -46,12 +48,24 @@ Per-row column (`Tags Command`) controlling how `Tags` are applied. `MERGE` (def
 Note: Matrixify supports Tags on multiple rows for the same product (each with its own `Tags Command`, executed in order). This system diverges: Tags are read only from the first row of each product (see First-Row Rule).
 
 ### First-Row Rule
-When a product spans multiple rows in the Excel Workbook (one row per Variant), Product Fields are read only from the first row encountered for that product. Subsequent rows for the same product are treated as variant-only and their Product Field cells are ignored. This prevents redundant `productUpdate` mutations and matches Matrixify's own convention.
+When a product spans multiple rows in the Excel Workbook, Product Fields are read only from the first row encountered for that product. Subsequent rows for the same product are treated as variant-only and their Product Field cells are ignored. This prevents redundant `productUpdate` mutations and matches Matrixify's own convention.
+
+For product-path rows (identified by Product ID or Handle, no variant): a later duplicate row with no variant fields is `skipped` with reason `"duplicate product row"`. A later row that has variant fields is processed normally for those fields — product field cells are still ignored.
 
 ### Lookup Key
-The identifier used to match an Excel row to a Shopify Variant. Variant ID takes precedence; SKU is used as fallback when Variant ID is absent.
+The identifier used to match an Excel row to a Shopify record. Two resolution paths exist:
 
-If Variant ID is present, the SKU column is no longer a lookup key; it becomes the desired replacement SKU.
+**Variant-path** (resolves to variantId + productId): used when the row targets variant fields or when a variant identifier is present.
+- `Variant ID` — highest precedence. When present, `Variant SKU` becomes a field to update (replacement SKU), not a lookup key.
+- `Variant SKU` — fallback when `Variant ID` is absent.
+
+**Product-path** (resolves to productId only, no variant): used only when no variant-level identifier is present.
+- `ID` (Product ID) — takes precedence over Handle.
+- `Handle` — last resort before failure.
+
+Full priority chain: Variant ID → SKU → Product ID → Handle → fail `"no lookup key"`.
+
+A row on the product-path that carries variant fields (price, compareAtPrice, cost) fails with reason `"variant lookup key required for variant fields"` — no variant can be inferred from a product-level identifier alone.
 
 ### Shopify API
 Shopify Admin GraphQL API, version `2026-04`. Pinned in the Shopify Client Module (`shopify-client.ts`) and `wrangler.toml`. Do not use `unstable` or `latest`. Required scopes: `write_products`, `read_products`, `write_inventory`, `read_inventory`. `write_inventory` is needed because cost is stored on `InventoryItem` and updated via `inventoryItem.cost` inside `productVariantsBulkUpdate`.
