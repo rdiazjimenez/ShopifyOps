@@ -83,6 +83,23 @@ export async function runBatch(
       }
 
       try {
+        // Tags MERGE/REPLACE routing (Slice 3).
+        // Unknown Tags Command values are treated as MERGE.
+        let resolvedTags: string[] | undefined;
+        if (productFields?.tags !== undefined) {
+          const excelTags = productFields.tags.split(",").map((t) => t.trim()).filter(Boolean);
+          const tagsCommand = (productFields.tagsCommand ?? "").toUpperCase();
+          if (tagsCommand === "REPLACE") {
+            // REPLACE: use Excel tags directly — no prefetch
+            resolvedTags = excelTags;
+          } else {
+            // MERGE (default, including empty tagsCommand and unknown values): fetch existing tags and union
+            const existingTags = await client.fetchProductTags(productId);
+            const merged = Array.from(new Set([...existingTags, ...excelTags]));
+            resolvedTags = merged;
+          }
+        }
+
         // Fire productUpdate and productVariantsBulkUpdate in parallel when product fields exist.
         // Skip updateVariants entirely when no row in the group carries actual variant fields —
         // sending a mutation with only IDs is a no-op that wastes an API call.
@@ -103,6 +120,7 @@ export async function runBatch(
               vendor: productFields.vendor,
               productType: productFields.productType,
               ...(normalizedStatus !== undefined ? { status: normalizedStatus } : {}),
+              ...(resolvedTags !== undefined ? { tags: resolvedTags } : {}),
             }
           : null;
         const productPromise = productInput

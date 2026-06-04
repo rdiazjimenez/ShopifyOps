@@ -15,6 +15,8 @@ function makeClient(overrides: Partial<ShopifyClient> = {}): ShopifyClient {
     updateVariants: vi.fn().mockResolvedValue({ productVariants: [], userErrors: [] }),
     resolveSkuToIds: vi.fn(),
     resolveVariantToProductId: vi.fn(),
+    updateProduct: vi.fn().mockResolvedValue({ product: { id: PRODUCT_A }, userErrors: [] }),
+    fetchProductTags: vi.fn().mockResolvedValue([]),
     ...overrides,
   } as unknown as ShopifyClient;
 }
@@ -509,5 +511,117 @@ describe("runBatch — Status validation and normalisation (Slice 2)", () => {
     await runBatch(rows, client, false);
     const callArgs = updateProduct.mock.calls[0][1];
     expect("status" in callArgs).toBe(false);
+  });
+});
+
+describe("runBatch — Tags MERGE and REPLACE (Slice 3)", () => {
+  it("MERGE path: fetchProductTags IS called; tags are unioned with deduplication", async () => {
+    const fetchProductTags = vi.fn().mockResolvedValue(["existing-tag", "shared-tag"]);
+    const updateProduct = vi.fn().mockResolvedValue({ product: { id: PRODUCT_A }, userErrors: [] });
+    const client = makeClient({
+      resolveVariantToProductId: vi.fn().mockResolvedValue(PRODUCT_A),
+      fetchProductTags,
+      updateProduct,
+    });
+
+    const rows = [
+      { skipped: false as const, row: 1, command: "UPDATE" as const, variantId: VARIANT_1, price: "9.99", tags: "shared-tag, new-tag", tagsCommand: "MERGE" },
+    ];
+
+    await runBatch(rows, client, false);
+    expect(fetchProductTags).toHaveBeenCalledTimes(1);
+    const callTags = updateProduct.mock.calls[0][1].tags as string[];
+    expect(callTags).toContain("existing-tag");
+    expect(callTags).toContain("shared-tag");
+    expect(callTags).toContain("new-tag");
+    // deduplication: shared-tag should appear only once
+    expect(callTags.filter((t: string) => t === "shared-tag")).toHaveLength(1);
+  });
+
+  it("REPLACE path: fetchProductTags is NOT called; Excel tags passed directly", async () => {
+    const fetchProductTags = vi.fn();
+    const updateProduct = vi.fn().mockResolvedValue({ product: { id: PRODUCT_A }, userErrors: [] });
+    const client = makeClient({
+      resolveVariantToProductId: vi.fn().mockResolvedValue(PRODUCT_A),
+      fetchProductTags,
+      updateProduct,
+    });
+
+    const rows = [
+      { skipped: false as const, row: 1, command: "UPDATE" as const, variantId: VARIANT_1, price: "9.99", tags: "tag-a, tag-b", tagsCommand: "REPLACE" },
+    ];
+
+    await runBatch(rows, client, false);
+    expect(fetchProductTags).not.toHaveBeenCalled();
+    expect(updateProduct.mock.calls[0][1].tags).toEqual(["tag-a", "tag-b"]);
+  });
+
+  it("empty tagsCommand defaults to MERGE (fetchProductTags called)", async () => {
+    const fetchProductTags = vi.fn().mockResolvedValue(["old-tag"]);
+    const updateProduct = vi.fn().mockResolvedValue({ product: { id: PRODUCT_A }, userErrors: [] });
+    const client = makeClient({
+      resolveVariantToProductId: vi.fn().mockResolvedValue(PRODUCT_A),
+      fetchProductTags,
+      updateProduct,
+    });
+
+    const rows = [
+      // No tagsCommand field
+      { skipped: false as const, row: 1, command: "UPDATE" as const, variantId: VARIANT_1, price: "9.99", tags: "new-tag" },
+    ];
+
+    await runBatch(rows, client, false);
+    expect(fetchProductTags).toHaveBeenCalledTimes(1);
+    const callTags = updateProduct.mock.calls[0][1].tags as string[];
+    expect(callTags).toContain("old-tag");
+    expect(callTags).toContain("new-tag");
+  });
+
+  it("unknown tagsCommand treated as MERGE (fetchProductTags called)", async () => {
+    const fetchProductTags = vi.fn().mockResolvedValue([]);
+    const updateProduct = vi.fn().mockResolvedValue({ product: { id: PRODUCT_A }, userErrors: [] });
+    const client = makeClient({
+      resolveVariantToProductId: vi.fn().mockResolvedValue(PRODUCT_A),
+      fetchProductTags,
+      updateProduct,
+    });
+
+    const rows = [
+      { skipped: false as const, row: 1, command: "UPDATE" as const, variantId: VARIANT_1, price: "9.99", tags: "t1", tagsCommand: "DELETE" },
+    ];
+
+    await runBatch(rows, client, false);
+    expect(fetchProductTags).toHaveBeenCalledTimes(1);
+  });
+
+  it("dry-run mode: fetchProductTags is NOT called", async () => {
+    const fetchProductTags = vi.fn();
+    const client = makeClient({
+      resolveVariantToProductId: vi.fn().mockResolvedValue(PRODUCT_A),
+      fetchProductTags,
+    });
+
+    const rows = [
+      { skipped: false as const, row: 1, command: "UPDATE" as const, variantId: VARIANT_1, price: "9.99", tags: "t1", tagsCommand: "MERGE" },
+    ];
+
+    const report = await runBatch(rows, client, true);
+    expect(fetchProductTags).not.toHaveBeenCalled();
+    expect(report.succeeded).toBe(1);
+  });
+
+  it("row without tags does not call fetchProductTags", async () => {
+    const fetchProductTags = vi.fn();
+    const client = makeClient({
+      resolveVariantToProductId: vi.fn().mockResolvedValue(PRODUCT_A),
+      fetchProductTags,
+    });
+
+    const rows = [
+      { skipped: false as const, row: 1, command: "UPDATE" as const, variantId: VARIANT_1, price: "9.99" },
+    ];
+
+    await runBatch(rows, client, false);
+    expect(fetchProductTags).not.toHaveBeenCalled();
   });
 });
