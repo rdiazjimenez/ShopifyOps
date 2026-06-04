@@ -1,0 +1,11 @@
+{
+  "buildCommand": "prisma generate && remix vite:build",
+  "installCommand": "npm install",
+  "framework": null,
+  "outputDirectory": "build/client",
+  "functions": {
+    "build/server/index.js": {
+      "runtime": "nodejs22.x"
+    }
+  }
+}
