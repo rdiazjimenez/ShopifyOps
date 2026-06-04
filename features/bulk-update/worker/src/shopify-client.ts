@@ -27,6 +27,7 @@ export interface ProductInput {
   vendor?: string;
   productType?: string;
   status?: string;
+  tags?: string[];
 }
 
 export interface UpdateProductResult {
@@ -96,6 +97,7 @@ export class ShopifyClient {
     if (input.vendor !== undefined) productInput['vendor'] = input.vendor;
     if (input.productType !== undefined) productInput['productType'] = input.productType;
     if (input.status !== undefined) productInput['status'] = input.status;
+    if (input.tags !== undefined) productInput['tags'] = input.tags;
 
     const result = await this.graphql<{
       productUpdate: UpdateProductResult;
@@ -112,7 +114,28 @@ export class ShopifyClient {
     return result.productUpdate;
   }
 
-  async resolveVariantToProductId(variantGid: string): Promise<string> {
+  /**
+   * Fetches the current tags array for a product.
+   * Called only during MERGE mode — never during REPLACE or dry-run.
+   * Validated against Shopify Admin API schema (2026-04).
+   */
+  async fetchProductTags(productId: string): Promise<string[]> {
+    const result = await this.graphql<{
+      product: { tags: string[] } | null;
+    }>(
+      `query fetchProductTags($id: ID!) {
+        product(id: $id) { tags }
+      }`,
+      { id: normalizeProductGid(productId) }
+    );
+
+    if (!result.product) {
+      throw new ShopifyClientError("Product not found");
+    }
+    return result.product.tags;
+  }
+
+    async resolveVariantToProductId(variantGid: string): Promise<string> {
     const result = await this.graphql<{
       productVariant: { product: { id: string } } | null;
     }>(

@@ -24,6 +24,8 @@ export type ParsedRow =
       vendor?: string;
       productType?: string;
       status?: string;
+      tags?: string;
+      tagsCommand?: string;
     }
   | SkippedRow;
 
@@ -170,6 +172,19 @@ export function parseExcel(buffer: ArrayBuffer, sheetName: string): ParsedRow[] 
       const v = cellValue(sheet, statusCol, r);
       // Status is passed through as raw string; normalisation and validation happen in the Batch Orchestrator.
       if (v != null) parsed.status = v;
+    }
+
+    const tagsCol = colOf("Tags");
+    if (tagsCol != null) {
+      const v = cellValue(sheet, tagsCol, r);
+      if (v != null) parsed.tags = v;
+    }
+
+    const tagsCommandCol = colOf("Tags Command");
+    if (tagsCommandCol != null) {
+      const v = cellValue(sheet, tagsCommandCol, r);
+      // Tags Command is passed through as raw string; MERGE/REPLACE routing happens in the Batch Orchestrator.
+      if (v != null) parsed.tagsCommand = v;
     }
 
     results.push(parsed);

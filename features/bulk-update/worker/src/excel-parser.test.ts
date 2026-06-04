@@ -384,3 +384,45 @@ describe("parseExcel – Status field", () => {
     expect(row.status).toBe("Active");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Tags and Tags Command fields (Slice 3)
+// ---------------------------------------------------------------------------
+
+describe("parseExcel – Tags and Tags Command fields", () => {
+  it("reads Tags column as raw comma-separated string", () => {
+    const buf = buildWorkbook("Sheet1", [
+      { Command: "UPDATE", "Variant ID": "222", Tags: "tag-a, tag-b, tag-c" },
+    ]);
+    const rows = parseExcel(buf, "Sheet1");
+    const row = rows[0] as Extract<ParsedRow, { skipped: false }>;
+    expect(row.tags).toBe("tag-a, tag-b, tag-c");
+  });
+
+  it("reads Tags Command column as raw string", () => {
+    const buf = buildWorkbook("Sheet1", [
+      { Command: "UPDATE", "Variant ID": "222", Tags: "t1", "Tags Command": "REPLACE" },
+    ]);
+    const rows = parseExcel(buf, "Sheet1");
+    const row = rows[0] as Extract<ParsedRow, { skipped: false }>;
+    expect(row.tagsCommand).toBe("REPLACE");
+  });
+
+  it("omits tags field when Tags cell is empty", () => {
+    const buf = buildWorkbook("Sheet1", [
+      { Command: "UPDATE", "Variant ID": "222", Tags: undefined, "Variant Price": "9.99" },
+    ]);
+    const rows = parseExcel(buf, "Sheet1");
+    const row = rows[0] as Extract<ParsedRow, { skipped: false }>;
+    expect("tags" in row).toBe(false);
+  });
+
+  it("omits tagsCommand field when Tags Command cell is empty", () => {
+    const buf = buildWorkbook("Sheet1", [
+      { Command: "UPDATE", "Variant ID": "222", "Tags Command": undefined, "Variant Price": "9.99" },
+    ]);
+    const rows = parseExcel(buf, "Sheet1");
+    const row = rows[0] as Extract<ParsedRow, { skipped: false }>;
+    expect("tagsCommand" in row).toBe(false);
+  });
+});

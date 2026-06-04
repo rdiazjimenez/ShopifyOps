@@ -340,3 +340,49 @@ describe("ShopifyClient.updateProduct", () => {
     expect(result.userErrors[0]?.message).toBe("Title is too long");
   });
 });
+
+describe("ShopifyClient.fetchProductTags", () => {
+  const PRODUCT_GID = "gid://shopify/Product/111";
+
+  it("returns tags array from response", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: { product: { tags: ["tag-a", "tag-b"] } },
+        }),
+        { headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    const client = makeClient(fetchFn);
+    const tags = await client.fetchProductTags(PRODUCT_GID);
+    expect(tags).toEqual(["tag-a", "tag-b"]);
+  });
+
+  it("normalizes numeric product ID to full GID in query", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ data: { product: { tags: [] } } }),
+        { headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    const client = makeClient(fetchFn);
+    await client.fetchProductTags("111");
+
+    const body = JSON.parse(fetchFn.mock.calls[0][1].body as string);
+    expect(body.variables.id).toBe("gid://shopify/Product/111");
+  });
+
+  it("throws ShopifyClientError when product not found", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ data: { product: null } }),
+        { headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    const client = makeClient(fetchFn);
+    await expect(client.fetchProductTags(PRODUCT_GID)).rejects.toThrow("Product not found");
+  });
+});
