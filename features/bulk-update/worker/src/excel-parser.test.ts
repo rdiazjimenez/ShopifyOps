@@ -290,3 +290,64 @@ describe("parseExcel – mixed rows", () => {
     expect(r3.cost).toBe("5.00");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Product-level fields (Tier 1)
+// ---------------------------------------------------------------------------
+
+describe("parseExcel – product-level fields", () => {
+  it("reads Title, Body HTML, Vendor, Type columns", () => {
+    const buf = buildWorkbook("Sheet1", [
+      {
+        Command: "UPDATE",
+        "Variant ID": "222",
+        Title: "My Product",
+        "Body HTML": "<p>Description</p>",
+        Vendor: "Acme",
+        Type: "Gadget",
+      },
+    ]);
+    const rows = parseExcel(buf, "Sheet1");
+    const row = rows[0] as Extract<ParsedRow, { skipped: false }>;
+    expect(row.title).toBe("My Product");
+    expect(row.bodyHtml).toBe("<p>Description</p>");
+    expect(row.vendor).toBe("Acme");
+    expect(row.productType).toBe("Gadget");
+  });
+
+  it("omits Title when cell is empty", () => {
+    const buf = buildWorkbook("Sheet1", [
+      { Command: "UPDATE", "Variant ID": "222", Title: undefined, "Variant Price": "9.99" },
+    ]);
+    const rows = parseExcel(buf, "Sheet1");
+    const row = rows[0] as Extract<ParsedRow, { skipped: false }>;
+    expect("title" in row).toBe(false);
+  });
+
+  it("omits all product fields when cells are empty", () => {
+    const buf = buildWorkbook("Sheet1", [
+      { Command: "UPDATE", "Variant ID": "222", "Variant Price": "9.99" },
+    ]);
+    const rows = parseExcel(buf, "Sheet1");
+    const row = rows[0] as Extract<ParsedRow, { skipped: false }>;
+    expect("title" in row).toBe(false);
+    expect("bodyHtml" in row).toBe(false);
+    expect("vendor" in row).toBe(false);
+    expect("productType" in row).toBe(false);
+  });
+
+  it("reads product fields case-insensitively (TITLE matches Title column)", () => {
+    const ws = XLSX.utils.aoa_to_sheet([
+      ["Command", "Variant ID", "TITLE", "VENDOR"],
+      ["UPDATE", "222", "Big Product", "Supplier Co"],
+    ]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
+    const buf = XLSX.write(wb, { type: "array", bookType: "xlsx" }) as ArrayBuffer;
+
+    const rows = parseExcel(buf, "Sheet1");
+    const row = rows[0] as Extract<ParsedRow, { skipped: false }>;
+    expect(row.title).toBe("Big Product");
+    expect(row.vendor).toBe("Supplier Co");
+  });
+});

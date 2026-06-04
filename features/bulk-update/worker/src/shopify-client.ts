@@ -20,6 +20,19 @@ export interface UpdateVariantsResult {
   userErrors: Array<{ field: string[]; message: string }>;
 }
 
+
+export interface ProductInput {
+  title?: string;
+  descriptionHtml?: string;
+  vendor?: string;
+  productType?: string;
+}
+
+export interface UpdateProductResult {
+  product: { id: string } | null;
+  userErrors: Array<{ field: string[]; message: string }>;
+}
+
 export interface ResolvedIds {
   variantId: string;
   productId: string;
@@ -67,6 +80,34 @@ export class ShopifyClient {
     );
 
     return result.productVariantsBulkUpdate;
+  }
+
+  /**
+   * Updates product-level fields via the productUpdate mutation.
+   * Only non-undefined fields in input are included.
+   * Surfaces userErrors as a thrown error.
+   * Validated against Shopify Admin API schema (2026-04).
+   */
+  async updateProduct(productId: string, input: ProductInput): Promise<UpdateProductResult> {
+    const productInput: Record<string, unknown> = { id: normalizeProductGid(productId) };
+    if (input.title !== undefined) productInput['title'] = input.title;
+    if (input.descriptionHtml !== undefined) productInput['descriptionHtml'] = input.descriptionHtml;
+    if (input.vendor !== undefined) productInput['vendor'] = input.vendor;
+    if (input.productType !== undefined) productInput['productType'] = input.productType;
+
+    const result = await this.graphql<{
+      productUpdate: UpdateProductResult;
+    }>(
+      `mutation productUpdate($input: ProductInput!) {
+        productUpdate(input: $input) {
+          product { id }
+          userErrors { field message }
+        }
+      }`,
+      { input: productInput }
+    );
+
+    return result.productUpdate;
   }
 
   async resolveVariantToProductId(variantGid: string): Promise<string> {
@@ -188,4 +229,9 @@ function isIpAddress(hostname: string): boolean {
 function normalizeVariantGid(id: string): string {
   if (id.startsWith("gid://")) return id;
   return `gid://shopify/ProductVariant/${id}`;
+}
+
+function normalizeProductGid(id: string): string {
+  if (id.startsWith('gid://')) return id;
+  return `gid://shopify/Product/${id}`;
 }
