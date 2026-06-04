@@ -424,6 +424,7 @@ describe("runBatch — product fields (First-Row Rule + parallel mutations)", ()
     expect(report.succeeded).toBe(1);
   });
 
+
   it("dry-run does not call updateProduct", async () => {
     const updateProduct = vi.fn().mockResolvedValue({ product: { id: PRODUCT_A }, userErrors: [] });
     const client = makeClient({
@@ -438,5 +439,75 @@ describe("runBatch — product fields (First-Row Rule + parallel mutations)", ()
     const report = await runBatch(rows, client, true);
     expect(updateProduct).not.toHaveBeenCalled();
     expect(report.succeeded).toBe(1);
+  });
+});
+
+describe("runBatch — Status validation and normalisation (Slice 2)", () => {
+  const validCases = ["active", "draft", "archived", "unlisted", "ACTIVE", "DRAFT", "ARCHIVED", "UNLISTED", "Active", "Draft"];
+
+  validCases.forEach((statusVal) => {
+    it(`accepts Status value "${statusVal}" and normalises to uppercase`, async () => {
+      const updateProduct = vi.fn().mockResolvedValue({ product: { id: PRODUCT_A }, userErrors: [] });
+      const client = makeClient({
+        resolveVariantToProductId: vi.fn().mockResolvedValue(PRODUCT_A),
+        updateProduct,
+      });
+
+      const rows = [
+        { skipped: false as const, row: 1, command: "UPDATE" as const, variantId: VARIANT_1, price: "9.99", status: statusVal },
+      ];
+
+      const report = await runBatch(rows, client, false);
+      expect(report.succeeded).toBe(1);
+      expect(updateProduct).toHaveBeenCalledTimes(1);
+      expect(updateProduct.mock.calls[0][1].status).toBe(statusVal.toUpperCase());
+    });
+  });
+
+  it("marks row as failed with descriptive reason for invalid Status value", async () => {
+    const client = makeClient({
+      resolveVariantToProductId: vi.fn().mockResolvedValue(PRODUCT_A),
+    });
+
+    const rows = [
+      { skipped: false as const, row: 1, command: "UPDATE" as const, variantId: VARIANT_1, price: "9.99", status: "pending" },
+    ];
+
+    const report = await runBatch(rows, client, false);
+    expect(report.failed).toBe(1);
+    expect(report.rows[0]?.reason).toContain("pending");
+    expect(client.updateVariants).not.toHaveBeenCalled();
+  });
+
+  it("does not send productUpdate mutation for invalid Status", async () => {
+    const updateProduct = vi.fn();
+    const client = makeClient({
+      resolveVariantToProductId: vi.fn().mockResolvedValue(PRODUCT_A),
+      updateProduct,
+    });
+
+    const rows = [
+      { skipped: false as const, row: 1, command: "UPDATE" as const, variantId: VARIANT_1, price: "9.99", status: "unknown-val" },
+    ];
+
+    await runBatch(rows, client, false);
+    expect(updateProduct).not.toHaveBeenCalled();
+  });
+
+  it("empty Status (no status field) does not add status to ProductInput", async () => {
+    const updateProduct = vi.fn().mockResolvedValue({ product: { id: PRODUCT_A }, userErrors: [] });
+    const client = makeClient({
+      resolveVariantToProductId: vi.fn().mockResolvedValue(PRODUCT_A),
+      updateProduct,
+    });
+
+    // Row has title but no status
+    const rows = [
+      { skipped: false as const, row: 1, command: "UPDATE" as const, variantId: VARIANT_1, price: "9.99", title: "T" },
+    ];
+
+    await runBatch(rows, client, false);
+    const callArgs = updateProduct.mock.calls[0][1];
+    expect("status" in callArgs).toBe(false);
   });
 });

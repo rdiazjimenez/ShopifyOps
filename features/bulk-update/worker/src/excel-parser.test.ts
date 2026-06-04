@@ -351,3 +351,36 @@ describe("parseExcel – product-level fields", () => {
     expect(row.vendor).toBe("Supplier Co");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Status field (Slice 2)
+// ---------------------------------------------------------------------------
+
+describe("parseExcel – Status field", () => {
+  it("reads Status column as raw string", () => {
+    const buf = buildWorkbook("Sheet1", [
+      { Command: "UPDATE", "Variant ID": "222", Status: "active" },
+    ]);
+    const rows = parseExcel(buf, "Sheet1");
+    const row = rows[0] as Extract<ParsedRow, { skipped: false }>;
+    expect(row.status).toBe("active");
+  });
+
+  it("omits status field when Status cell is empty", () => {
+    const buf = buildWorkbook("Sheet1", [
+      { Command: "UPDATE", "Variant ID": "222", Status: undefined, "Variant Price": "9.99" },
+    ]);
+    const rows = parseExcel(buf, "Sheet1");
+    const row = rows[0] as Extract<ParsedRow, { skipped: false }>;
+    expect("status" in row).toBe(false);
+  });
+
+  it("passes through mixed-case Status as-is", () => {
+    const buf = buildWorkbook("Sheet1", [
+      { Command: "UPDATE", "Variant ID": "222", Status: "Active" },
+    ]);
+    const rows = parseExcel(buf, "Sheet1");
+    const row = rows[0] as Extract<ParsedRow, { skipped: false }>;
+    expect(row.status).toBe("Active");
+  });
+});
