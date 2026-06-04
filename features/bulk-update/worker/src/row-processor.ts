@@ -7,6 +7,7 @@ export interface ProductFields {
   bodyHtml?: string;
   vendor?: string;
   productType?: string;
+  status?: string;
 }
 
 export type ProcessedRow =
@@ -19,12 +20,12 @@ export async function processRow(row: ParsedRow, client: ShopifyClient): Promise
     return { type: "skipped", row: row.row, lookupKey: "", reason: row.reason };
   }
 
-  const { row: rowNum, command, variantId, sku, newSku, price, compareAtPrice, cost, title, bodyHtml, vendor, productType } = row;
+  const { row: rowNum, command, variantId, sku, newSku, price, compareAtPrice, cost, title, bodyHtml, vendor, productType, status } = row;
 
   // A row is valid if it has at least one variant field OR at least one product field.
   // The First-Row Rule (only first row of each product carries product fields) is enforced by the Batch Orchestrator.
   const hasVariantFields = !!(newSku || price || compareAtPrice || cost);
-  const hasProductFields = !!(title || bodyHtml || vendor || productType);
+  const hasProductFields = !!(title || bodyHtml || vendor || productType || status);
 
   if (!hasVariantFields && !hasProductFields) {
     return { type: "skipped", row: rowNum, lookupKey: variantId ?? sku ?? "", reason: "no fields to update" };
@@ -66,6 +67,7 @@ export async function processRow(row: ParsedRow, client: ShopifyClient): Promise
   if (bodyHtml !== undefined) productFieldsObj.bodyHtml = bodyHtml;
   if (vendor !== undefined) productFieldsObj.vendor = vendor;
   if (productType !== undefined) productFieldsObj.productType = productType;
+  if (status !== undefined) productFieldsObj.status = status;
 
   const pending: ProcessedRow & { type: "pending" } = {
     type: "pending",

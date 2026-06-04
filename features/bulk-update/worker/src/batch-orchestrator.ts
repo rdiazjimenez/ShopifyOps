@@ -3,6 +3,8 @@ import type { ShopifyClient, VariantInput, ProductInput } from "./shopify-client
 import { processRow } from "./row-processor";
 import type { ProductFields } from "./row-processor";
 
+const VALID_STATUS_VALUES = new Set(["ACTIVE", "DRAFT", "ARCHIVED", "UNLISTED"]);
+
 export interface RowResult {
   row: number;
   lookupKey: string;
@@ -63,6 +65,23 @@ export async function runBatch(
       const firstRow = group[0]!;
       const productFields = firstRow.productFields;
 
+      // Status normalisation and validation (Slice 2)
+      let statusValidationError: string | undefined;
+      let normalizedStatus: string | undefined;
+      if (productFields?.status !== undefined) {
+        normalizedStatus = productFields.status.toUpperCase();
+        if (!VALID_STATUS_VALUES.has(normalizedStatus)) {
+          statusValidationError = `Invalid Status value: "${productFields.status}". Accepted values: active, draft, archived, unlisted`;
+        }
+      }
+
+      if (statusValidationError) {
+        for (const item of group) {
+          rows.push({ row: item.row, lookupKey: item.lookupKey, status: "failed", reason: statusValidationError });
+        }
+        continue;
+      }
+
       try {
         // Fire productUpdate and productVariantsBulkUpdate in parallel when product fields exist.
         // Skip updateVariants entirely when no row in the group carries actual variant fields —
@@ -77,13 +96,17 @@ export async function runBatch(
         const variantPromise = hasVariantFields
           ? client.updateVariants(productId, group.map((g) => g.variantInput))
           : Promise.resolve<{ productVariants: []; userErrors: [] }>({ productVariants: [], userErrors: [] });
-        const productPromise = productFields
-          ? client.updateProduct(productId, {
+        const productInput = productFields
+          ? {
               title: productFields.title,
               descriptionHtml: productFields.bodyHtml,
               vendor: productFields.vendor,
               productType: productFields.productType,
-            })
+              ...(normalizedStatus !== undefined ? { status: normalizedStatus } : {}),
+            }
+          : null;
+        const productPromise = productInput
+          ? client.updateProduct(productId, productInput)
           : Promise.resolve(null);
 
         const [variantResult, productResult] = await Promise.all([variantPromise, productPromise]);

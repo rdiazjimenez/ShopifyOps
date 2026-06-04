@@ -23,6 +23,7 @@ export type ParsedRow =
       bodyHtml?: string;
       vendor?: string;
       productType?: string;
+      status?: string;
     }
   | SkippedRow;
 
@@ -162,6 +163,13 @@ export function parseExcel(buffer: ArrayBuffer, sheetName: string): ParsedRow[] 
     if (typeCol != null) {
       const v = cellValue(sheet, typeCol, r);
       if (v != null) parsed.productType = v;
+    }
+
+    const statusCol = colOf("Status");
+    if (statusCol != null) {
+      const v = cellValue(sheet, statusCol, r);
+      // Status is passed through as raw string; normalisation and validation happen in the Batch Orchestrator.
+      if (v != null) parsed.status = v;
     }
 
     results.push(parsed);

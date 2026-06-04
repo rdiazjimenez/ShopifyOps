@@ -26,6 +26,7 @@ export interface ProductInput {
   descriptionHtml?: string;
   vendor?: string;
   productType?: string;
+  status?: string;
 }
 
 export interface UpdateProductResult {
@@ -94,6 +95,7 @@ export class ShopifyClient {
     if (input.descriptionHtml !== undefined) productInput['descriptionHtml'] = input.descriptionHtml;
     if (input.vendor !== undefined) productInput['vendor'] = input.vendor;
     if (input.productType !== undefined) productInput['productType'] = input.productType;
+    if (input.status !== undefined) productInput['status'] = input.status;
 
     const result = await this.graphql<{
       productUpdate: UpdateProductResult;
