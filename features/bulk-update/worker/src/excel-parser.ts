@@ -12,6 +12,7 @@ export type ParsedRow =
       variantId?: string;
       sku?: string;
       newSku?: string;
+      productId?: string;
       handle?: string;
       price?: string;
       compareAtPrice?: string;
@@ -116,6 +117,12 @@ export function parseExcel(buffer: ArrayBuffer, sheetName: string): ParsedRow[] 
         if (parsed.variantId) parsed.newSku = v;
         else parsed.sku = v;
       }
+    }
+
+    const idCol = colOf("ID");
+    if (idCol != null) {
+      const v = cellValue(sheet, idCol, r);
+      if (v != null) parsed.productId = v;
     }
 
     const handleCol = colOf("Handle");

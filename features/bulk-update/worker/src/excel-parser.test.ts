@@ -426,3 +426,46 @@ describe("parseExcel – Tags and Tags Command fields", () => {
     expect("tagsCommand" in row).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// ID column (Issue #32 — Product ID product-path lookup)
+// ---------------------------------------------------------------------------
+
+describe("parseExcel – ID column (product-path)", () => {
+  it("reads numeric ID column as string", () => {
+    const buf = buildWorkbook("Sheet1", [
+      { Command: "UPDATE", ID: 123456, Title: "My Product" },
+    ]);
+    const rows = parseExcel(buf, "Sheet1");
+    const row = rows[0] as Extract<ParsedRow, { skipped: false }>;
+    expect(row.productId).toBe("123456");
+  });
+
+  it("reads full GID in ID column", () => {
+    const buf = buildWorkbook("Sheet1", [
+      { Command: "UPDATE", ID: "gid://shopify/Product/111", Title: "My Product" },
+    ]);
+    const rows = parseExcel(buf, "Sheet1");
+    const row = rows[0] as Extract<ParsedRow, { skipped: false }>;
+    expect(row.productId).toBe("gid://shopify/Product/111");
+  });
+
+  it("omits productId field when ID cell is empty", () => {
+    const buf = buildWorkbook("Sheet1", [
+      { Command: "UPDATE", ID: undefined, "Variant ID": "222", "Variant Price": "9.99" },
+    ]);
+    const rows = parseExcel(buf, "Sheet1");
+    const row = rows[0] as Extract<ParsedRow, { skipped: false }>;
+    expect("productId" in row).toBe(false);
+  });
+
+  it("reads both ID and Variant ID when both present", () => {
+    const buf = buildWorkbook("Sheet1", [
+      { Command: "UPDATE", ID: "111", "Variant ID": "222", Title: "T" },
+    ]);
+    const rows = parseExcel(buf, "Sheet1");
+    const row = rows[0] as Extract<ParsedRow, { skipped: false }>;
+    expect(row.productId).toBe("111");
+    expect(row.variantId).toBe("222");
+  });
+});

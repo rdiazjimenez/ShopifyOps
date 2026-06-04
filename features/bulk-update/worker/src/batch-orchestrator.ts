@@ -27,12 +27,25 @@ export async function runBatch(
 ): Promise<ResultReport> {
   const processed = await Promise.all(parsedRows.map((row) => processRow(row, client)));
 
-  // Group pending rows by productId, preserving insertion order
-  const pendingByProduct = new Map<string, Array<{ row: number; lookupKey: string; variantInput: VariantInput; productFields?: ProductFields }> >();
+  // Group pending rows by productId, preserving insertion order.
+  // Product-path rows (productPath: true) enforce the product-path First-Row Rule:
+  // the first product-path row for a productId fires productUpdate;
+  // subsequent product-path rows for the same productId are skipped as "duplicate product row".
+  const pendingByProduct = new Map<string, Array<{ row: number; lookupKey: string; variantInput: VariantInput; productFields?: ProductFields; productPath?: true }>>();
+  const productPathSeen = new Set<string>();
+  const productPathDuplicates = new Set<number>();
+
   for (const p of processed) {
     if (p.type === "pending") {
+      if (p.productPath) {
+        if (productPathSeen.has(p.productId)) {
+          productPathDuplicates.add(p.row);
+          continue;
+        }
+        productPathSeen.add(p.productId);
+      }
       const group = pendingByProduct.get(p.productId) ?? [];
-      group.push({ row: p.row, lookupKey: p.lookupKey, variantInput: p.variantInput, productFields: p.productFields });
+      group.push({ row: p.row, lookupKey: p.lookupKey, variantInput: p.variantInput, productFields: p.productFields, productPath: p.productPath });
       pendingByProduct.set(p.productId, group);
     }
   }
@@ -41,12 +54,14 @@ export async function runBatch(
   let succeeded = 0;
   let skipped = 0;
 
-  // Collect failed/skipped from resolution phase
   for (const p of processed) {
     if (p.type === "failed") {
       rows.push({ row: p.row, lookupKey: p.lookupKey, status: "failed", reason: p.reason });
     } else if (p.type === "skipped") {
       rows.push({ row: p.row, lookupKey: p.lookupKey, status: "skipped", reason: p.reason });
+      skipped++;
+    } else if (p.type === "pending" && productPathDuplicates.has(p.row)) {
+      rows.push({ row: p.row, lookupKey: p.lookupKey, status: "skipped", reason: "duplicate product row" });
       skipped++;
     }
   }
@@ -60,12 +75,10 @@ export async function runBatch(
     }
   } else {
     for (const [productId, group] of pendingByProduct.entries()) {
-      // First-Row Rule: only the first row of a product group carries product fields.
-      // Subsequent rows are treated as variant-only regardless of their product field cells.
       const firstRow = group[0]!;
       const productFields = firstRow.productFields;
+      const isProductPath = firstRow.productPath === true;
 
-      // Status normalisation and validation (Slice 2)
       let statusValidationError: string | undefined;
       let normalizedStatus: string | undefined;
       if (productFields?.status !== undefined) {
@@ -83,35 +96,32 @@ export async function runBatch(
       }
 
       try {
-        // Tags MERGE/REPLACE routing (Slice 3).
-        // Unknown Tags Command values are treated as MERGE.
         let resolvedTags: string[] | undefined;
         if (productFields?.tags !== undefined) {
           const excelTags = productFields.tags.split(",").map((t) => t.trim()).filter(Boolean);
           const tagsCommand = (productFields.tagsCommand ?? "").toUpperCase();
           if (tagsCommand === "REPLACE") {
-            // REPLACE: use Excel tags directly — no prefetch
             resolvedTags = excelTags;
           } else {
-            // MERGE (default, including empty tagsCommand and unknown values): fetch existing tags and union
             const existingTags = await client.fetchProductTags(productId);
             const merged = Array.from(new Set([...existingTags, ...excelTags]));
             resolvedTags = merged;
           }
         }
 
-        // Fire productUpdate and productVariantsBulkUpdate in parallel when product fields exist.
-        // Skip updateVariants entirely when no row in the group carries actual variant fields —
-        // sending a mutation with only IDs is a no-op that wastes an API call.
+        // Product-path-only groups never call updateVariants.
+        // Mixed groups (product-path + variant rows) still call updateVariants for the variant rows.
         const hasVariantFields = group.some(
           (g) =>
-            g.variantInput.sku !== undefined ||
-            g.variantInput.price !== undefined ||
-            g.variantInput.compareAtPrice !== undefined ||
-            g.variantInput.cost !== undefined
+            !g.productPath && (
+              g.variantInput.sku !== undefined ||
+              g.variantInput.price !== undefined ||
+              g.variantInput.compareAtPrice !== undefined ||
+              g.variantInput.cost !== undefined
+            )
         );
         const variantPromise = hasVariantFields
-          ? client.updateVariants(productId, group.map((g) => g.variantInput))
+          ? client.updateVariants(productId, group.filter((g) => !g.productPath).map((g) => g.variantInput))
           : Promise.resolve<{ productVariants: []; userErrors: [] }>({ productVariants: [], userErrors: [] });
         const productInput = productFields
           ? {
@@ -129,9 +139,7 @@ export async function runBatch(
 
         const [variantResult, productResult] = await Promise.all([variantPromise, productPromise]);
 
-        // Collect failure reasons from both operations (strictest merge)
         const reasons: string[] = [];
-
         if (variantResult.userErrors.length > 0) {
           reasons.push(...variantResult.userErrors.map((e) => e.message));
         }

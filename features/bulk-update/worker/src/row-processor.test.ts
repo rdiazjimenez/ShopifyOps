@@ -201,3 +201,105 @@ describe("processRow — product fields", () => {
     }
   });
 });
+
+describe("processRow — product-path (Product ID, Issue #32)", () => {
+  it("row with Product ID only (no Variant ID, no SKU) + product fields → pending with productPath", async () => {
+    const client = makeClient();
+    const result = await processRow({ ...baseRow, productId: "111", title: "New Title" }, client);
+    expect(result.type).toBe("pending");
+    if (result.type === "pending") {
+      expect(result.productPath).toBe(true);
+      expect(result.productId).toBe("gid://shopify/Product/111");
+      expect(result.productFields?.title).toBe("New Title");
+    }
+  });
+
+  it("normalizes numeric Product ID to GID", async () => {
+    const client = makeClient();
+    const result = await processRow({ ...baseRow, productId: "12345", title: "T" }, client);
+    expect(result.type).toBe("pending");
+    if (result.type === "pending") {
+      expect(result.productId).toBe("gid://shopify/Product/12345");
+    }
+  });
+
+  it("passes through full GID Product ID unchanged", async () => {
+    const client = makeClient();
+    const result = await processRow({ ...baseRow, productId: "gid://shopify/Product/999", title: "T" }, client);
+    expect(result.type).toBe("pending");
+    if (result.type === "pending") {
+      expect(result.productId).toBe("gid://shopify/Product/999");
+    }
+  });
+
+  it("Product ID with variant fields (price) → failed with 'variant lookup key required for variant fields'", async () => {
+    const client = makeClient();
+    const result = await processRow({ ...baseRow, productId: "111", price: "9.99" }, client);
+    expect(result.type).toBe("failed");
+    if (result.type === "failed") {
+      expect(result.reason).toBe("variant lookup key required for variant fields");
+      expect(result.lookupKey).toBe("111");
+    }
+  });
+
+  it("Product ID with SKU variant field → failed", async () => {
+    const client = makeClient();
+    const result = await processRow({ ...baseRow, productId: "111", newSku: "NEW-SKU" }, client);
+    expect(result.type).toBe("failed");
+    if (result.type === "failed") {
+      expect(result.reason).toBe("variant lookup key required for variant fields");
+    }
+  });
+
+  it("Product ID with cost variant field → failed", async () => {
+    const client = makeClient();
+    const result = await processRow({ ...baseRow, productId: "111", cost: "3.00" }, client);
+    expect(result.type).toBe("failed");
+    if (result.type === "failed") {
+      expect(result.reason).toBe("variant lookup key required for variant fields");
+    }
+  });
+
+  it("Product ID with no product or variant fields → skipped 'no fields to update'", async () => {
+    const client = makeClient();
+    const result = await processRow({ ...baseRow, productId: "111" }, client);
+    expect(result.type).toBe("skipped");
+    if (result.type === "skipped") expect(result.reason).toBe("no fields to update");
+  });
+
+  it("Variant ID present → Variant ID wins over Product ID; resolveVariantToProductId called", async () => {
+    const client = makeClient();
+    const result = await processRow({ ...baseRow, variantId: VARIANT_GID, productId: "111", price: "9.99" }, client);
+    expect(client.resolveVariantToProductId).toHaveBeenCalled();
+    expect(result.type).toBe("pending");
+    if (result.type === "pending") {
+      expect(result.productPath).toBeUndefined();
+    }
+  });
+
+  it("SKU present (no Variant ID) → SKU wins over Product ID; resolveSkuToIds called", async () => {
+    const client = makeClient();
+    const result = await processRow({ ...baseRow, sku: "SKU-001", productId: "111", price: "9.99" }, client);
+    expect(client.resolveSkuToIds).toHaveBeenCalledWith("SKU-001");
+    expect(result.type).toBe("pending");
+    if (result.type === "pending") {
+      expect(result.productPath).toBeUndefined();
+    }
+  });
+
+  it("lookupKey equals Product ID value used in the row", async () => {
+    const client = makeClient();
+    const result = await processRow({ ...baseRow, productId: "111", title: "T" }, client);
+    expect(result.type).toBe("pending");
+    if (result.type === "pending") {
+      expect(result.lookupKey).toBe("111");
+    }
+  });
+
+  it("product-path row has no API calls (no resolveVariantToProductId, no resolveSkuToIds)", async () => {
+    const client = makeClient();
+    await processRow({ ...baseRow, productId: "111", title: "T" }, client);
+    expect(client.resolveVariantToProductId).not.toHaveBeenCalled();
+    expect(client.resolveSkuToIds).not.toHaveBeenCalled();
+  });
+});
