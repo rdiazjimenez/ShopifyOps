@@ -15,7 +15,7 @@ The monetary value assigned to a Variant. Stored as a decimal string in Shopify 
 The cost of goods for a Variant. Stored on `InventoryItem.unitCost`. Updated via the `inventoryItem.cost` field nested inside `productVariantsBulkUpdate` — no separate `inventoryItemUpdate` mutation. Requires `write_inventory` scope.
 
 ### Bulk Operation
-A user-initiated action that updates up to hundreds of Variant records in a single execution. Driven by data from an Excel Workbook. Scope: update-only (no create or delete). Rows are processed independently — a failed row is skipped and logged; remaining rows continue. Returns a Result Report.
+A user-initiated action that updates up to hundreds of records in a single execution. Driven by data from an Excel Workbook. Scope: update-only (no create or delete). Updates two scopes independently per product: Product Fields (once, from the First-Row) and Variant fields (once per variant row). Rows are processed independently — a failed row is skipped and logged; remaining rows continue. Returns a Result Report.
 
 ### Result Report
 The response from a Bulk Operation. Contains: `total`, `succeeded`, `failed`, `skipped` counts, and `rows[]` — one entry per processed row with `row` number, `lookupKey`, `status` (`success` | `failed` | `skipped`), and `reason` (present on failed and skipped rows). `total === succeeded + failed + skipped`. The frontend uses `rows[]` to annotate the downloaded Excel Workbook.
@@ -24,12 +24,27 @@ The response from a Bulk Operation. Contains: `total`, `succeeded`, `failed`, `s
 Optional mode (`?dryRun=true`) where rows are validated and API calls are simulated but no mutations are sent to Shopify. Returns a Result Report showing what would have changed.
 
 ### Excel Workbook
-The source of truth for bulk operation data. Follows Matrixify column format. Each row represents one Variant record. Empty cell = skip that field. Key columns: `Handle`, `Variant ID`, `Variant SKU`, `Command`, `Variant Price`, `Variant Compare At Price`, `Variant Cost`.
+The source of truth for bulk operation data. Follows Matrixify column format. Each row represents one Variant record and optionally carries Product Fields for the parent product. Empty cell = skip that field.
+
+Key columns — variant: `Handle`, `Variant ID`, `Variant SKU`, `Command`, `Variant Price`, `Variant Compare At Price`, `Variant Cost`. Key columns — product: `Title`, `Body HTML`, `Vendor`, `Type`, `Tags`, `Tags Command`, `Status`.
 
 When `Variant ID` is present, `Variant SKU` is treated as a field to update on that variant. When `Variant ID` is absent, `Variant SKU` is treated as the fallback lookup key.
 
 ### Command
 Per-row instruction column (Matrixify format). `UPDATE`: update if found, fail if not found. `MERGE`: update if found, fail if not found (create is out of scope). Other values (`NEW`, `DELETE`, `REPLACE`, `IGNORE`, unknown) → row skipped.
+
+### Product Fields
+The set of product-level fields updated by a Bulk Operation via a single `productUpdate` mutation. Tier 1 (in scope): `Title`, `Body HTML` (`descriptionHtml`), `Vendor`, `Type` (`productType`), `Tags`, `Status`. Tier 2+ (out of scope: Published/channel visibility, Images, Collections, Category, Options, Metafields).
+
+A row contributes Product Fields only if it is the First-Row for its product. Empty cells are skipped — only non-empty Product Fields are included in the mutation input.
+
+`Status` accepted values: `active`, `draft`, `archived` (case-insensitive; mapped to Shopify enum `ACTIVE` / `DRAFT` / `ARCHIVED`).
+
+### Tags Command
+Per-row column (`Tags Command`) controlling how `Tags` are applied. `REPLACE` (default when empty): overwrites all existing tags with the Excel value. `MERGE`: fetches existing tags first and unions them with the Excel value — slower but non-destructive. Other values treated as `REPLACE`.
+
+### First-Row Rule
+When a product spans multiple rows in the Excel Workbook (one row per Variant), Product Fields are read only from the first row encountered for that product. Subsequent rows for the same product are treated as variant-only and their Product Field cells are ignored. This prevents redundant `productUpdate` mutations and matches Matrixify's own convention.
 
 ### Lookup Key
 The identifier used to match an Excel row to a Shopify Variant. Variant ID takes precedence; SKU is used as fallback when Variant ID is absent.

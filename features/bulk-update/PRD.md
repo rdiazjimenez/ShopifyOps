@@ -186,7 +186,7 @@ Prior art: `excel-parser.test.ts`, `shopify-client.test.ts`, `row-processor.test
 
 ## Further Notes
 
-- The Matrixify demo workbook (`Matrixify-Import-Demo-Products.xlsx`) in the repo root serves as the reference for column format and is used as a test fixture.
+- The Matrixify demo workbook (`ImportProducts-Demo.xlsx`) in the repo root serves as the reference for column format and is used as a test fixture.
 - Cloudflare Workers free plan has a 10ms CPU time limit — paid plan required for batch sizes in the hundreds.
 - Cost is updated via `inventoryItem { cost }` nested inside `productVariantsBulkUpdate` — no separate `inventoryItemUpdate` call. This was confirmed against the Shopify `ProductVariantsBulkInput` schema.
 - Idempotency: the Result Report lets merchants safely re-run the same workbook after fixing errors — already-correct values are unchanged by the update.
