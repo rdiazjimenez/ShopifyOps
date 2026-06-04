@@ -76,8 +76,7 @@ export async function runBatch(
   } else {
     for (const [productId, group] of pendingByProduct.entries()) {
       const firstRow = group[0]!;
-      const productFields = firstRow.productFields;
-      const isProductPath = firstRow.productPath === true;
+      const productFields = group.find((g) => g.productPath)?.productFields ?? firstRow.productFields;
 
       let statusValidationError: string | undefined;
       let normalizedStatus: string | undefined;

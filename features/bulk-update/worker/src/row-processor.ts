@@ -61,7 +61,15 @@ export async function processRow(row: ParsedRow, client: ShopifyClient): Promise
       return { type: "failed", row: rowNum, lookupKey: rawProductId, reason: "variant lookup key required for variant fields" };
     }
     // Normalize Product ID to GID (no API call required)
-    const normalizedProductId = rawProductId.startsWith("gid://") ? rawProductId : `gid://shopify/Product/${rawProductId}`;
+    let normalizedProductId: string;
+    if (rawProductId.startsWith("gid://")) {
+      if (!/^gid:\/\/shopify\/Product\/\d+$/.test(rawProductId)) {
+        return { type: "failed", row: rowNum, lookupKey: rawProductId, reason: `Invalid Product GID: "${rawProductId}"` };
+      }
+      normalizedProductId = rawProductId;
+    } else {
+      normalizedProductId = `gid://shopify/Product/${rawProductId}`;
+    }
 
     const productFieldsObj: ProductFields = {};
     if (title !== undefined) productFieldsObj.title = title;

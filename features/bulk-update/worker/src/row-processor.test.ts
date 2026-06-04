@@ -232,6 +232,15 @@ describe("processRow — product-path (Product ID, Issue #32)", () => {
     }
   });
 
+  it("wrong-entity GID (ProductVariant) → failed with 'Invalid Product GID'", async () => {
+    const client = makeClient();
+    const result = await processRow({ ...baseRow, productId: "gid://shopify/ProductVariant/111", title: "T" }, client);
+    expect(result.type).toBe("failed");
+    if (result.type === "failed") {
+      expect(result.reason).toContain("Invalid Product GID");
+    }
+  });
+
   it("Product ID with variant fields (price) → failed with 'variant lookup key required for variant fields'", async () => {
     const client = makeClient();
     const result = await processRow({ ...baseRow, productId: "111", price: "9.99" }, client);

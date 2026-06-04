@@ -693,6 +693,29 @@ describe("runBatch — product-path Product ID rows (Issue #32)", () => {
     expect(report.succeeded).toBe(2);
   });
 
+  it("variant row before product-path row (reversed order) → both updateVariants and updateProduct fire", async () => {
+    const updateVariants = vi.fn().mockResolvedValue({ productVariants: [], userErrors: [] });
+    const updateProduct = vi.fn().mockResolvedValue({ product: { id: PRODUCT_A }, userErrors: [] });
+    const client = makeClient({
+      resolveVariantToProductId: vi.fn().mockResolvedValue(PRODUCT_A),
+      updateVariants,
+      updateProduct,
+    });
+
+    const rows = [
+      // variant row first
+      { skipped: false as const, row: 1, command: "UPDATE" as const, variantId: VARIANT_1, price: "9.99" },
+      // product-path row second for same product
+      { skipped: false as const, row: 2, command: "UPDATE" as const, productId: "111", title: "New Title" },
+    ];
+
+    const report = await runBatch(rows, client, false);
+    expect(updateVariants).toHaveBeenCalledTimes(1);
+    expect(updateProduct).toHaveBeenCalledTimes(1);
+    expect(updateProduct).toHaveBeenCalledWith(PRODUCT_A, expect.objectContaining({ title: "New Title" }));
+    expect(report.succeeded).toBe(2);
+  });
+
   it("dry-run: product-path productUpdate suppressed; row appears as success", async () => {
     const updateProduct = vi.fn();
     const client = makeClient({ updateProduct });
