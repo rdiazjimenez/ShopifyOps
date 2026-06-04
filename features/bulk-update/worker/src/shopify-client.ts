@@ -182,10 +182,10 @@ export class ShopifyClient {
     const result = await this.graphql<{
       product: { id: string } | null;
     }>(
-      `query resolveHandleToProductId($handle: String!) {
-        product(handle: $handle) { id }
+      `query resolveHandleToProductId($identifier: ProductIdentifierInput!) {
+        product: productByIdentifier(identifier: $identifier) { id }
       }`,
-      { handle }
+      { identifier: { handle } }
     );
 
     if (!result.product) {

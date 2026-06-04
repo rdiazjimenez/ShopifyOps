@@ -397,7 +397,7 @@ describe("ShopifyClient.resolveHandleToProductId", () => {
     const id = await client.resolveHandleToProductId("my-product");
     expect(id).toBe("gid://shopify/Product/999");
     const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
-    expect(body.variables.handle).toBe("my-product");
+    expect(body.variables.identifier.handle).toBe("my-product");
   });
 
   it("throws ShopifyClientError('Handle not found') when product is null", async () => {

@@ -375,6 +375,17 @@ describe("processRow - handle product-path (Issue #33)", () => {
     }
   });
 
+  it("SKU + Handle - SKU wins; resolveHandleToProductId not called", async () => {
+    const client = makeClient();
+    const result = await processRow({ ...baseRow, sku: "SKU-001", handle: "my-product", price: "9.99" }, client);
+    expect(client.resolveSkuToIds).toHaveBeenCalledWith("SKU-001");
+    expect(client.resolveHandleToProductId).not.toHaveBeenCalled();
+    expect(result.type).toBe("pending");
+    if (result.type === "pending") {
+      expect(result.productPath).toBeUndefined();
+    }
+  });
+
   it("Product ID + Handle - Product ID wins; resolveHandleToProductId not called", async () => {
     const client = makeClient();
     const result = await processRow({ ...baseRow, productId: "111", handle: "my-product", title: "T" }, client);
