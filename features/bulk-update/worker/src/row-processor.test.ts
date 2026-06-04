@@ -12,6 +12,7 @@ function makeClient(overrides: Partial<ShopifyClient> = {}): ShopifyClient {
     resolveSkuToIds: vi.fn().mockResolvedValue({ variantId: VARIANT_GID, productId: PRODUCT_GID }),
     resolveVariantToProductId: vi.fn().mockResolvedValue(PRODUCT_GID),
     resolveHandleToProductId: vi.fn().mockResolvedValue(PRODUCT_GID),
+    resolveProductToSingleVariantId: vi.fn().mockResolvedValue(VARIANT_GID),
     ...overrides,
   } as unknown as ShopifyClient;
 }
@@ -242,31 +243,38 @@ describe("processRow — product-path (Product ID, Issue #32)", () => {
     }
   });
 
-  it("Product ID with variant fields (price) → failed with 'variant lookup key required for variant fields'", async () => {
+  it("Product ID + variant field (price) + single-variant product → auto-resolves to pending", async () => {
     const client = makeClient();
     const result = await processRow({ ...baseRow, productId: "111", price: "9.99" }, client);
-    expect(result.type).toBe("failed");
-    if (result.type === "failed") {
-      expect(result.reason).toBe("variant lookup key required for variant fields");
+    expect(client.resolveProductToSingleVariantId).toHaveBeenCalledWith("gid://shopify/Product/111");
+    expect(result.type).toBe("pending");
+    if (result.type === "pending") {
+      expect(result.variantInput.id).toBe(VARIANT_GID);
+      expect(result.variantInput.price).toBe("9.99");
       expect(result.lookupKey).toBe("111");
     }
   });
 
-  it("Product ID with SKU variant field → failed", async () => {
+  it("Product ID + SKU variant field + single-variant product → auto-resolves to pending", async () => {
     const client = makeClient();
     const result = await processRow({ ...baseRow, productId: "111", newSku: "NEW-SKU" }, client);
-    expect(result.type).toBe("failed");
-    if (result.type === "failed") {
-      expect(result.reason).toBe("variant lookup key required for variant fields");
+    expect(client.resolveProductToSingleVariantId).toHaveBeenCalled();
+    expect(result.type).toBe("pending");
+    if (result.type === "pending") {
+      expect(result.variantInput.sku).toBe("NEW-SKU");
     }
   });
 
-  it("Product ID with cost variant field → failed", async () => {
-    const client = makeClient();
+  it("Product ID + variant field + multi-variant product → failed with 'Product has multiple variants'", async () => {
+    const client = makeClient({
+      resolveProductToSingleVariantId: vi.fn().mockRejectedValue(
+        new ShopifyClientError("Product has multiple variants — Variant ID required")
+      ),
+    });
     const result = await processRow({ ...baseRow, productId: "111", cost: "3.00" }, client);
     expect(result.type).toBe("failed");
     if (result.type === "failed") {
-      expect(result.reason).toBe("variant lookup key required for variant fields");
+      expect(result.reason).toBe("Product has multiple variants — Variant ID required");
     }
   });
 
@@ -345,22 +353,29 @@ describe("processRow - handle product-path (Issue #33)", () => {
     }
   });
 
-  it("Handle + variant field (price) - failed variant lookup key required for variant fields", async () => {
+  it("Handle + variant field (price) + single-variant product → auto-resolves to pending", async () => {
     const client = makeClient();
     const result = await processRow({ ...baseRow, handle: "my-product", price: "9.99" }, client);
-    expect(result.type).toBe("failed");
-    if (result.type === "failed") {
-      expect(result.reason).toBe("variant lookup key required for variant fields");
+    expect(client.resolveProductToSingleVariantId).toHaveBeenCalledWith(PRODUCT_GID);
+    expect(result.type).toBe("pending");
+    if (result.type === "pending") {
+      expect(result.variantInput.id).toBe(VARIANT_GID);
+      expect(result.variantInput.price).toBe("9.99");
       expect(result.lookupKey).toBe("my-product");
     }
   });
 
-  it("Handle + cost variant field - failed", async () => {
-    const client = makeClient();
+  it("Handle + variant field + multi-variant product → failed with 'Product has multiple variants'", async () => {
+    const client = makeClient({
+      resolveProductToSingleVariantId: vi.fn().mockRejectedValue(
+        new ShopifyClientError("Product has multiple variants — Variant ID required")
+      ),
+    });
     const result = await processRow({ ...baseRow, handle: "my-product", cost: "3.00" }, client);
     expect(result.type).toBe("failed");
     if (result.type === "failed") {
-      expect(result.reason).toBe("variant lookup key required for variant fields");
+      expect(result.reason).toBe("Product has multiple variants — Variant ID required");
+      expect(result.lookupKey).toBe("my-product");
     }
   });
 

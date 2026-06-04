@@ -13,7 +13,7 @@ export interface ProductFields {
 }
 
 export type ProcessedRow =
-  | { type: "pending"; row: number; lookupKey: string; productId: string; variantInput: VariantInput; productFields?: ProductFields; productPath?: true }
+  | { type: "pending"; row: number; lookupKey: string; productId: string; variantInput: VariantInput; productFields?: ProductFields; productPath?: true; createVariant?: true }
   | { type: "failed"; row: number; lookupKey: string; reason: string }
   | { type: "skipped"; row: number; lookupKey: string; reason: string };
 
@@ -35,7 +35,7 @@ export async function processRow(row: ParsedRow, client: ShopifyClient): Promise
 
   let resolvedVariantId: string;
   let resolvedProductId: string;
-  const lookupKey = variantId ?? sku ?? rawProductId ?? "";  // handle is used inline when reached
+  let lookupKey = variantId ?? sku ?? rawProductId ?? "";  // updated inline for handle path
 
   if (variantId) {
     resolvedVariantId = variantId.startsWith("gid://") ? variantId : `gid://shopify/ProductVariant/${variantId}`;
@@ -55,11 +55,6 @@ export async function processRow(row: ParsedRow, client: ShopifyClient): Promise
       return { type: "failed", row: rowNum, lookupKey, reason };
     }
   } else if (rawProductId) {
-    // Product-path lookup: Product ID present, no variant identifier (Variant ID or SKU)
-    // Validate: variant fields are not allowed on the product-path
-    if (hasVariantFields) {
-      return { type: "failed", row: rowNum, lookupKey: rawProductId, reason: "variant lookup key required for variant fields" };
-    }
     // Normalize Product ID to GID (no API call required)
     let normalizedProductId: string;
     if (rawProductId.startsWith("gid://")) {
@@ -80,24 +75,49 @@ export async function processRow(row: ParsedRow, client: ShopifyClient): Promise
     if (tags !== undefined) productFieldsObj.tags = tags;
     if (tagsCommand !== undefined) productFieldsObj.tagsCommand = tagsCommand;
 
-    const productPathPending: ProcessedRow & { type: "pending" } = {
-      type: "pending",
-      row: rowNum,
-      lookupKey: rawProductId,
-      productId: normalizedProductId,
-      variantInput: { id: normalizedProductId }, // sentinel — never passed to updateVariants for product-path rows
-      productPath: true,
-    };
-    if (hasProductFields) {
-      productPathPending.productFields = productFieldsObj;
+    if (command === "NEW" && hasVariantFields) {
+      const variantInput: VariantInput = { id: normalizedProductId }; // sentinel — not used as variant GID
+      if (newSku !== undefined) variantInput.sku = newSku;
+      if (price !== undefined) variantInput.price = price;
+      if (compareAtPrice !== undefined) variantInput.compareAtPrice = compareAtPrice;
+      if (cost !== undefined) variantInput.cost = cost;
+      const createPending: ProcessedRow & { type: "pending" } = {
+        type: "pending",
+        row: rowNum,
+        lookupKey: rawProductId,
+        productId: normalizedProductId,
+        variantInput,
+        createVariant: true,
+      };
+      if (hasProductFields) createPending.productFields = productFieldsObj;
+      return createPending;
     }
-    return productPathPending;
-  } else if (row.handle) {
-    // Handle product-path lookup: Handle present, no variant identifier and no Product ID
-    const handle = row.handle;
+
     if (hasVariantFields) {
-      return { type: "failed", row: rowNum, lookupKey: handle, reason: "variant lookup key required for variant fields" };
+      // Auto-resolve: product has exactly one variant — resolve and fall through to variant update.
+      try {
+        resolvedVariantId = await client.resolveProductToSingleVariantId(normalizedProductId);
+        resolvedProductId = normalizedProductId;
+      } catch (err) {
+        const reason = err instanceof ShopifyClientError ? err.message : "Variant lookup failed";
+        return { type: "failed", row: rowNum, lookupKey: rawProductId, reason };
+      }
+    } else {
+      // Product-path: no variant fields — update product fields only.
+      const productPathPending: ProcessedRow & { type: "pending" } = {
+        type: "pending",
+        row: rowNum,
+        lookupKey: rawProductId,
+        productId: normalizedProductId,
+        variantInput: { id: normalizedProductId }, // sentinel
+        productPath: true,
+      };
+      if (hasProductFields) productPathPending.productFields = productFieldsObj;
+      return productPathPending;
     }
+  } else if (row.handle) {
+    const handle = row.handle;
+    lookupKey = handle; // update for fall-through to variant building
     let resolvedHandleProductId: string;
     try {
       resolvedHandleProductId = await client.resolveHandleToProductId(handle);
@@ -115,18 +135,46 @@ export async function processRow(row: ParsedRow, client: ShopifyClient): Promise
     if (tags !== undefined) productFieldsObj.tags = tags;
     if (tagsCommand !== undefined) productFieldsObj.tagsCommand = tagsCommand;
 
-    const handlePathPending: ProcessedRow & { type: "pending" } = {
-      type: "pending",
-      row: rowNum,
-      lookupKey: handle,
-      productId: resolvedHandleProductId,
-      variantInput: { id: resolvedHandleProductId }, // sentinel
-      productPath: true,
-    };
-    if (hasProductFields) {
-      handlePathPending.productFields = productFieldsObj;
+    if (command === "NEW" && hasVariantFields) {
+      const variantInput: VariantInput = { id: resolvedHandleProductId }; // sentinel — not used as variant GID
+      if (newSku !== undefined) variantInput.sku = newSku;
+      if (price !== undefined) variantInput.price = price;
+      if (compareAtPrice !== undefined) variantInput.compareAtPrice = compareAtPrice;
+      if (cost !== undefined) variantInput.cost = cost;
+      const createPending: ProcessedRow & { type: "pending" } = {
+        type: "pending",
+        row: rowNum,
+        lookupKey: handle,
+        productId: resolvedHandleProductId,
+        variantInput,
+        createVariant: true,
+      };
+      if (hasProductFields) createPending.productFields = productFieldsObj;
+      return createPending;
     }
-    return handlePathPending;
+
+    if (hasVariantFields) {
+      // Auto-resolve: product has exactly one variant — resolve and fall through to variant update.
+      try {
+        resolvedVariantId = await client.resolveProductToSingleVariantId(resolvedHandleProductId);
+        resolvedProductId = resolvedHandleProductId;
+      } catch (err) {
+        const reason = err instanceof ShopifyClientError ? err.message : "Variant lookup failed";
+        return { type: "failed", row: rowNum, lookupKey: handle, reason };
+      }
+    } else {
+      // Product-path: no variant fields — update product fields only.
+      const handlePathPending: ProcessedRow & { type: "pending" } = {
+        type: "pending",
+        row: rowNum,
+        lookupKey: handle,
+        productId: resolvedHandleProductId,
+        variantInput: { id: resolvedHandleProductId }, // sentinel
+        productPath: true,
+      };
+      if (hasProductFields) handlePathPending.productFields = productFieldsObj;
+      return handlePathPending;
+    }
   } else {
     return { type: "failed", row: rowNum, lookupKey: "", reason: "no lookup key" };
   }

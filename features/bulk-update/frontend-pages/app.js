@@ -111,7 +111,8 @@ uploadForm.addEventListener("submit", async (e) => {
   submitBtn.disabled = true;
 
   const formData = new FormData();
-  formData.append("file", selectedFile, selectedFile.name);
+  const blob = new Blob([selectedBuffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  formData.append("file", blob, selectedFile.name);
 
   const params = new URLSearchParams({ sheet });
   if (dryRun) params.set("dryRun", "true");

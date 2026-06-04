@@ -1,6 +1,6 @@
 import * as XLSX from "xlsx";
 
-export type Command = "UPDATE" | "MERGE";
+export type Command = "UPDATE" | "MERGE" | "NEW";
 
 export type SkippedRow = { row: number; reason: string; skipped: true };
 
@@ -30,8 +30,8 @@ export type ParsedRow =
     }
   | SkippedRow;
 
-const SUPPORTED_COMMANDS: Command[] = ["UPDATE", "MERGE"];
-const UNSUPPORTED_COMMANDS = ["NEW", "DELETE", "REPLACE", "IGNORE"];
+const SUPPORTED_COMMANDS: Command[] = ["UPDATE", "MERGE", "NEW"];
+const UNSUPPORTED_COMMANDS = ["DELETE", "REPLACE", "IGNORE"];
 
 function cellValue(
   sheet: XLSX.WorkSheet,
@@ -71,14 +71,11 @@ export function parseExcel(buffer: ArrayBuffer, sheetName: string): ParsedRow[] 
   for (let r = headerRow + 1; r <= range.e.r; r++) {
     const rowNum = r - headerRow; // 1-based data row number
 
-    const commandRaw = colOf("Command") != null
-      ? cellValue(sheet, colOf("Command")!, r)
-      : undefined;
-
-    if (!commandRaw) {
-      results.push({ row: rowNum, reason: "missing command", skipped: true });
-      continue;
-    }
+    // Blank or absent Command defaults to MERGE (Matrixify convention).
+    const commandRaw =
+      colOf("Command") != null
+        ? (cellValue(sheet, colOf("Command")!, r) ?? "MERGE")
+        : "MERGE";
 
     const commandUpper = commandRaw.toUpperCase();
 
@@ -114,7 +111,8 @@ export function parseExcel(buffer: ArrayBuffer, sheetName: string): ParsedRow[] 
     if (skuCol != null) {
       const v = cellValue(sheet, skuCol, r);
       if (v != null) {
-        if (parsed.variantId) parsed.newSku = v;
+        // NEW command: SKU is a field to set on the new variant, not a lookup key.
+        if (parsed.variantId || command === "NEW") parsed.newSku = v;
         else parsed.sku = v;
       }
     }

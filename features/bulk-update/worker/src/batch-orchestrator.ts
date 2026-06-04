@@ -31,7 +31,7 @@ export async function runBatch(
   // Product-path rows (productPath: true) enforce the product-path First-Row Rule:
   // the first product-path row for a productId fires productUpdate;
   // subsequent product-path rows for the same productId are skipped as "duplicate product row".
-  const pendingByProduct = new Map<string, Array<{ row: number; lookupKey: string; variantInput: VariantInput; productFields?: ProductFields; productPath?: true }>>();
+  const pendingByProduct = new Map<string, Array<{ row: number; lookupKey: string; variantInput: VariantInput; productFields?: ProductFields; productPath?: true; createVariant?: true }>>();
   const productPathSeen = new Set<string>();
   const productPathDuplicates = new Set<number>();
 
@@ -45,7 +45,7 @@ export async function runBatch(
         productPathSeen.add(p.productId);
       }
       const group = pendingByProduct.get(p.productId) ?? [];
-      group.push({ row: p.row, lookupKey: p.lookupKey, variantInput: p.variantInput, productFields: p.productFields, productPath: p.productPath });
+      group.push({ row: p.row, lookupKey: p.lookupKey, variantInput: p.variantInput, productFields: p.productFields, productPath: p.productPath, createVariant: p.createVariant });
       pendingByProduct.set(p.productId, group);
     }
   }
@@ -110,17 +110,27 @@ export async function runBatch(
 
         // Product-path-only groups never call updateVariants.
         // Mixed groups (product-path + variant rows) still call updateVariants for the variant rows.
-        const hasVariantFields = group.some(
+        // createVariant rows call createVariants instead of updateVariants.
+        const hasUpdateVariantFields = group.some(
           (g) =>
-            !g.productPath && (
+            !g.productPath && !g.createVariant && (
               g.variantInput.sku !== undefined ||
               g.variantInput.price !== undefined ||
               g.variantInput.compareAtPrice !== undefined ||
               g.variantInput.cost !== undefined
             )
         );
-        const variantPromise = hasVariantFields
-          ? client.updateVariants(productId, group.filter((g) => !g.productPath).map((g) => g.variantInput))
+        const createVariantRows = group.filter((g) => g.createVariant);
+        const variantPromise = hasUpdateVariantFields
+          ? client.updateVariants(productId, group.filter((g) => !g.productPath && !g.createVariant).map((g) => g.variantInput))
+          : Promise.resolve<{ productVariants: []; userErrors: [] }>({ productVariants: [], userErrors: [] });
+        const createVariantsPromise = createVariantRows.length > 0
+          ? client.createVariants(productId, createVariantRows.map((g) => ({
+              sku: g.variantInput.sku,
+              price: g.variantInput.price,
+              compareAtPrice: g.variantInput.compareAtPrice,
+              cost: g.variantInput.cost,
+            })))
           : Promise.resolve<{ productVariants: []; userErrors: [] }>({ productVariants: [], userErrors: [] });
         const productInput = productFields
           ? {
@@ -136,7 +146,7 @@ export async function runBatch(
           ? client.updateProduct(productId, productInput)
           : Promise.resolve(null);
 
-        const [variantResult, productResult] = await Promise.all([variantPromise, productPromise]);
+        const [variantResult, productResult, createResult] = await Promise.all([variantPromise, productPromise, createVariantsPromise]);
 
         const reasons: string[] = [];
         if (variantResult.userErrors.length > 0) {
@@ -144,6 +154,9 @@ export async function runBatch(
         }
         if (productResult && productResult.userErrors.length > 0) {
           reasons.push(...productResult.userErrors.map((e) => e.message));
+        }
+        if (createResult.userErrors.length > 0) {
+          reasons.push(...createResult.userErrors.map((e) => e.message));
         }
 
         if (reasons.length > 0) {

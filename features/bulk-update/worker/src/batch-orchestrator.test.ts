@@ -14,9 +14,11 @@ const VARIANT_3 = "gid://shopify/ProductVariant/3";
 function makeClient(overrides: Partial<ShopifyClient> = {}): ShopifyClient {
   return {
     updateVariants: vi.fn().mockResolvedValue({ productVariants: [], userErrors: [] }),
+    createVariants: vi.fn().mockResolvedValue({ productVariants: [], userErrors: [] }),
     resolveSkuToIds: vi.fn(),
     resolveVariantToProductId: vi.fn(),
     resolveHandleToProductId: vi.fn().mockResolvedValue(PRODUCT_A),
+    resolveProductToSingleVariantId: vi.fn().mockResolvedValue(VARIANT_1),
     updateProduct: vi.fn().mockResolvedValue({ product: { id: PRODUCT_A }, userErrors: [] }),
     fetchProductTags: vi.fn().mockResolvedValue([]),
     ...overrides,
@@ -262,7 +264,7 @@ describe("runBatch — dry run", () => {
 });
 
 describe("runBatch — real fixture file", () => {
-  it("processes Matrixify demo workbook without throwing", async () => {
+  it("dry-run of demo workbook: total=5, succeeded=4, skipped=1, failed=0", async () => {
     const { parseExcel } = await import("./excel-parser");
     const filePath = join(__dirname, "../../ImportProducts-Demo.xlsx");
     const buffer = readFileSync(filePath).buffer;
@@ -274,8 +276,12 @@ describe("runBatch — real fixture file", () => {
     });
 
     const report = await runBatch(rows, client, true);
-    expect(report.total).toBe(report.succeeded + report.failed + report.skipped);
-    expect(report.total).toBeGreaterThan(0);
+    expect(report.total).toBe(5);
+    expect(report.succeeded).toBe(4);
+    expect(report.skipped).toBe(1);
+    expect(report.failed).toBe(0);
+    const skippedRow = report.rows.find((r) => r.status === "skipped");
+    expect(skippedRow?.reason).toContain("unsupported command");
   });
 });
 
@@ -744,12 +750,11 @@ describe("runBatch — product-path Product ID rows (Issue #32)", () => {
     expect(report.rows[0]?.reason).toBe("no fields to update");
   });
 
-  it("Command=NEW with valid ID → skipped (not failed) at parser level", async () => {
-    // NEW is an unsupported command so it's skipped by the parser, not failed
+  it("skipped row (unsupported command) → skipped, not failed", async () => {
     const client = makeClient();
 
     const rows = [
-      { skipped: true as const, row: 1, reason: "unsupported command: NEW" },
+      { skipped: true as const, row: 1, reason: "unsupported command: DELETE" },
     ];
 
     const report = await runBatch(rows, client, false);
