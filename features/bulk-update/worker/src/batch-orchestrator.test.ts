@@ -424,6 +424,7 @@ describe("runBatch — product fields (First-Row Rule + parallel mutations)", ()
     expect(report.succeeded).toBe(1);
   });
 
+
   it("dry-run does not call updateProduct", async () => {
     const updateProduct = vi.fn().mockResolvedValue({ product: { id: PRODUCT_A }, userErrors: [] });
     const client = makeClient({
