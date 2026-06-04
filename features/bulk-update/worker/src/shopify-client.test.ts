@@ -386,3 +386,37 @@ describe("ShopifyClient.fetchProductTags", () => {
     await expect(client.fetchProductTags(PRODUCT_GID)).rejects.toThrow("Product not found");
   });
 });
+
+describe("ShopifyClient.resolveHandleToProductId", () => {
+  it("returns productId GID for found handle", async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: { product: { id: "gid://shopify/Product/999" } } }),
+    });
+    const client = new ShopifyClient("test-store.myshopify.com", "tok", mockFetch as unknown as typeof fetch);
+    const id = await client.resolveHandleToProductId("my-product");
+    expect(id).toBe("gid://shopify/Product/999");
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+    expect(body.variables.handle).toBe("my-product");
+  });
+
+  it("throws ShopifyClientError('Handle not found') when product is null", async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: { product: null } }),
+    });
+    const client = new ShopifyClient("test-store.myshopify.com", "tok", mockFetch as unknown as typeof fetch);
+    await expect(client.resolveHandleToProductId("missing")).rejects.toThrow("Handle not found");
+  });
+
+  it("throws ShopifyClientError on HTTP error", async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+      statusText: "Not Found",
+      text: async () => "",
+    });
+    const client = new ShopifyClient("test-store.myshopify.com", "tok", mockFetch as unknown as typeof fetch);
+    await expect(client.resolveHandleToProductId("any-handle")).rejects.toThrow(ShopifyClientError);
+  });
+});
