@@ -41,7 +41,9 @@ A row contributes Product Fields only if it is the First-Row for its product. Em
 `Status` accepted values: `active`, `draft`, `archived` (case-insensitive; mapped to Shopify enum `ACTIVE` / `DRAFT` / `ARCHIVED`).
 
 ### Tags Command
-Per-row column (`Tags Command`) controlling how `Tags` are applied. `REPLACE` (default when empty): overwrites all existing tags with the Excel value. `MERGE`: fetches existing tags first and unions them with the Excel value — slower but non-destructive. Other values treated as `REPLACE`.
+Per-row column (`Tags Command`) controlling how `Tags` are applied. `MERGE` (default, including empty): fetches existing tags first and unions them with the Excel value — non-destructive, matches Matrixify's default. `REPLACE`: overwrites all existing tags with the Excel value — faster but destructive. Other values treated as `MERGE`.
+
+Note: Matrixify supports Tags on multiple rows for the same product (each with its own `Tags Command`, executed in order). This system diverges: Tags are read only from the first row of each product (see First-Row Rule).
 
 ### First-Row Rule
 When a product spans multiple rows in the Excel Workbook (one row per Variant), Product Fields are read only from the first row encountered for that product. Subsequent rows for the same product are treated as variant-only and their Product Field cells are ignored. This prevents redundant `productUpdate` mutations and matches Matrixify's own convention.
