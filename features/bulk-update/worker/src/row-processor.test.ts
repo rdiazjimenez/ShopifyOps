@@ -149,3 +149,55 @@ describe("processRow — failure cases", () => {
     expect(result.type).toBe("skipped");
   });
 });
+
+describe("processRow — product fields", () => {
+  it("row with only product fields is not skipped", async () => {
+    const client = makeClient();
+    const result = await processRow({ ...baseRow, variantId: VARIANT_GID, title: "New Title" }, client);
+    expect(result.type).toBe("pending");
+  });
+
+  it("row with only variant fields continues to work", async () => {
+    const client = makeClient();
+    const result = await processRow({ ...baseRow, variantId: VARIANT_GID, price: "9.99" }, client);
+    expect(result.type).toBe("pending");
+    if (result.type === "pending") {
+      expect("productFields" in result).toBe(false);
+    }
+  });
+
+  it("row with both product and variant fields is pending with both", async () => {
+    const client = makeClient();
+    const result = await processRow({ ...baseRow, variantId: VARIANT_GID, price: "9.99", title: "New Title" }, client);
+    expect(result.type).toBe("pending");
+    if (result.type === "pending") {
+      expect(result.variantInput.price).toBe("9.99");
+      expect(result.productFields?.title).toBe("New Title");
+    }
+  });
+
+  it("row with neither product nor variant fields is skipped", async () => {
+    const client = makeClient();
+    const result = await processRow({ ...baseRow, variantId: VARIANT_GID }, client);
+    expect(result.type).toBe("skipped");
+  });
+
+  it("product fields are carried in productFields of pending result", async () => {
+    const client = makeClient();
+    const result = await processRow({
+      ...baseRow,
+      variantId: VARIANT_GID,
+      title: "T",
+      bodyHtml: "<p>D</p>",
+      vendor: "V",
+      productType: "PT",
+    }, client);
+    expect(result.type).toBe("pending");
+    if (result.type === "pending") {
+      expect(result.productFields?.title).toBe("T");
+      expect(result.productFields?.bodyHtml).toBe("<p>D</p>");
+      expect(result.productFields?.vendor).toBe("V");
+      expect(result.productFields?.productType).toBe("PT");
+    }
+  });
+});

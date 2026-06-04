@@ -16,6 +16,13 @@ export type ParsedRow =
       price?: string;
       compareAtPrice?: string;
       cost?: string;
+      // Product-level fields (Tier 1)
+      // Deviation from Matrixify: empty cells are ignored (not sent to Shopify).
+      // Matrixify would treat an empty cell as clearing the field — this is a deliberate deviation.
+      title?: string;
+      bodyHtml?: string;
+      vendor?: string;
+      productType?: string;
     }
   | SkippedRow;
 
@@ -130,6 +137,31 @@ export function parseExcel(buffer: ArrayBuffer, sheetName: string): ParsedRow[] 
     if (costCol != null) {
       const v = cellValue(sheet, costCol, r);
       if (v != null) parsed.cost = v;
+    }
+
+    // Product-level fields (Tier 1)
+    const titleCol = colOf("Title");
+    if (titleCol != null) {
+      const v = cellValue(sheet, titleCol, r);
+      if (v != null) parsed.title = v;
+    }
+
+    const bodyHtmlCol = colOf("Body HTML");
+    if (bodyHtmlCol != null) {
+      const v = cellValue(sheet, bodyHtmlCol, r);
+      if (v != null) parsed.bodyHtml = v;
+    }
+
+    const vendorCol = colOf("Vendor");
+    if (vendorCol != null) {
+      const v = cellValue(sheet, vendorCol, r);
+      if (v != null) parsed.vendor = v;
+    }
+
+    const typeCol = colOf("Type");
+    if (typeCol != null) {
+      const v = cellValue(sheet, typeCol, r);
+      if (v != null) parsed.productType = v;
     }
 
     results.push(parsed);

@@ -274,3 +274,150 @@ describe("runBatch — real fixture file", () => {
     expect(report.total).toBeGreaterThan(0);
   });
 });
+
+describe("runBatch — product fields (First-Row Rule + parallel mutations)", () => {
+  it("fires updateProduct for first row of product group when product fields present", async () => {
+    const updateProduct = vi.fn().mockResolvedValue({ product: { id: PRODUCT_A }, userErrors: [] });
+    const client = makeClient({
+      resolveVariantToProductId: vi.fn().mockResolvedValue(PRODUCT_A),
+      updateProduct,
+    });
+
+    const rows = [
+      { skipped: false as const, row: 1, command: "UPDATE" as const, variantId: VARIANT_1, price: "9.99", title: "New Title" },
+    ];
+
+    await runBatch(rows, client, false);
+    expect(updateProduct).toHaveBeenCalledTimes(1);
+    expect(updateProduct.mock.calls[0][0]).toBe(PRODUCT_A);
+    expect(updateProduct.mock.calls[0][1].title).toBe("New Title");
+  });
+
+  it("does not fire updateProduct when no product fields on first row", async () => {
+    const updateProduct = vi.fn().mockResolvedValue({ product: { id: PRODUCT_A }, userErrors: [] });
+    const client = makeClient({
+      resolveVariantToProductId: vi.fn().mockResolvedValue(PRODUCT_A),
+      updateProduct,
+    });
+
+    const rows = [
+      { skipped: false as const, row: 1, command: "UPDATE" as const, variantId: VARIANT_1, price: "9.99" },
+    ];
+
+    await runBatch(rows, client, false);
+    expect(updateProduct).not.toHaveBeenCalled();
+  });
+
+  it("First-Row Rule: product fields from row 1 only; row 2 treated as variant-only", async () => {
+    const updateProduct = vi.fn().mockResolvedValue({ product: { id: PRODUCT_A }, userErrors: [] });
+    const client = makeClient({
+      resolveVariantToProductId: vi.fn().mockResolvedValue(PRODUCT_A),
+      updateProduct,
+    });
+
+    const rows = [
+      { skipped: false as const, row: 1, command: "UPDATE" as const, variantId: VARIANT_1, price: "9.99", title: "Title Row1" },
+      { skipped: false as const, row: 2, command: "UPDATE" as const, variantId: VARIANT_2, price: "14.99", title: "Title Row2" },
+    ];
+
+    await runBatch(rows, client, false);
+    // updateProduct called once (for first row), not twice
+    expect(updateProduct).toHaveBeenCalledTimes(1);
+    expect(updateProduct.mock.calls[0][1].title).toBe("Title Row1");
+  });
+
+  it("fires updateVariants and updateProduct in parallel (both called once per product)", async () => {
+    const updateVariants = vi.fn().mockResolvedValue({ productVariants: [], userErrors: [] });
+    const updateProduct = vi.fn().mockResolvedValue({ product: { id: PRODUCT_A }, userErrors: [] });
+    const client = makeClient({
+      resolveVariantToProductId: vi.fn().mockResolvedValue(PRODUCT_A),
+      updateVariants,
+      updateProduct,
+    });
+
+    const rows = [
+      { skipped: false as const, row: 1, command: "UPDATE" as const, variantId: VARIANT_1, price: "9.99", title: "T" },
+    ];
+
+    await runBatch(rows, client, false);
+    expect(updateVariants).toHaveBeenCalledTimes(1);
+    expect(updateProduct).toHaveBeenCalledTimes(1);
+  });
+
+  it("row is failed if product update fails and variant succeeds", async () => {
+    const client = makeClient({
+      resolveVariantToProductId: vi.fn().mockResolvedValue(PRODUCT_A),
+      updateVariants: vi.fn().mockResolvedValue({ productVariants: [], userErrors: [] }),
+      updateProduct: vi.fn().mockResolvedValue({
+        product: null,
+        userErrors: [{ field: ["title"], message: "Product update error" }],
+      }),
+    });
+
+    const rows = [
+      { skipped: false as const, row: 1, command: "UPDATE" as const, variantId: VARIANT_1, price: "9.99", title: "T" },
+    ];
+
+    const report = await runBatch(rows, client, false);
+    expect(report.failed).toBe(1);
+    expect(report.succeeded).toBe(0);
+    expect(report.rows[0]?.reason).toContain("Product update error");
+  });
+
+  it("row is failed if variant update fails and product succeeds", async () => {
+    const client = makeClient({
+      resolveVariantToProductId: vi.fn().mockResolvedValue(PRODUCT_A),
+      updateVariants: vi.fn().mockResolvedValue({
+        productVariants: [],
+        userErrors: [{ field: ["price"], message: "Variant update error" }],
+      }),
+      updateProduct: vi.fn().mockResolvedValue({ product: { id: PRODUCT_A }, userErrors: [] }),
+    });
+
+    const rows = [
+      { skipped: false as const, row: 1, command: "UPDATE" as const, variantId: VARIANT_1, price: "bad", title: "T" },
+    ];
+
+    const report = await runBatch(rows, client, false);
+    expect(report.failed).toBe(1);
+    expect(report.rows[0]?.reason).toContain("Variant update error");
+  });
+
+  it("failure reasons from both product and variant operations are concatenated", async () => {
+    const client = makeClient({
+      resolveVariantToProductId: vi.fn().mockResolvedValue(PRODUCT_A),
+      updateVariants: vi.fn().mockResolvedValue({
+        productVariants: [],
+        userErrors: [{ field: ["price"], message: "Price invalid" }],
+      }),
+      updateProduct: vi.fn().mockResolvedValue({
+        product: null,
+        userErrors: [{ field: ["title"], message: "Title too long" }],
+      }),
+    });
+
+    const rows = [
+      { skipped: false as const, row: 1, command: "UPDATE" as const, variantId: VARIANT_1, price: "bad", title: "T".repeat(300) },
+    ];
+
+    const report = await runBatch(rows, client, false);
+    expect(report.rows[0]?.reason).toContain("Price invalid");
+    expect(report.rows[0]?.reason).toContain("Title too long");
+  });
+
+  it("dry-run does not call updateProduct", async () => {
+    const updateProduct = vi.fn().mockResolvedValue({ product: { id: PRODUCT_A }, userErrors: [] });
+    const client = makeClient({
+      resolveVariantToProductId: vi.fn().mockResolvedValue(PRODUCT_A),
+      updateProduct,
+    });
+
+    const rows = [
+      { skipped: false as const, row: 1, command: "UPDATE" as const, variantId: VARIANT_1, price: "9.99", title: "T" },
+    ];
+
+    const report = await runBatch(rows, client, true);
+    expect(updateProduct).not.toHaveBeenCalled();
+    expect(report.succeeded).toBe(1);
+  });
+});

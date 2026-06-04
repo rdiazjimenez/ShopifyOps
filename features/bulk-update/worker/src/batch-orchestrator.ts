@@ -1,6 +1,7 @@
 import type { ParsedRow } from "./excel-parser";
-import type { ShopifyClient, VariantInput } from "./shopify-client";
+import type { ShopifyClient, VariantInput, ProductInput } from "./shopify-client";
 import { processRow } from "./row-processor";
+import type { ProductFields } from "./row-processor";
 
 export interface RowResult {
   row: number;
@@ -24,11 +25,12 @@ export async function runBatch(
 ): Promise<ResultReport> {
   const processed = await Promise.all(parsedRows.map((row) => processRow(row, client)));
 
-  const pendingByProduct = new Map<string, Array<{ row: number; lookupKey: string; variantInput: VariantInput }>>();
+  // Group pending rows by productId, preserving insertion order
+  const pendingByProduct = new Map<string, Array<{ row: number; lookupKey: string; variantInput: VariantInput; productFields?: ProductFields }> >();
   for (const p of processed) {
     if (p.type === "pending") {
       const group = pendingByProduct.get(p.productId) ?? [];
-      group.push({ row: p.row, lookupKey: p.lookupKey, variantInput: p.variantInput });
+      group.push({ row: p.row, lookupKey: p.lookupKey, variantInput: p.variantInput, productFields: p.productFields });
       pendingByProduct.set(p.productId, group);
     }
   }
@@ -56,14 +58,37 @@ export async function runBatch(
     }
   } else {
     for (const [productId, group] of pendingByProduct.entries()) {
-      try {
-        const result = await client.updateVariants(
-          productId,
-          group.map((g) => g.variantInput)
-        );
+      // First-Row Rule: only the first row of a product group carries product fields.
+      // Subsequent rows are treated as variant-only regardless of their product field cells.
+      const firstRow = group[0]!;
+      const productFields = firstRow.productFields;
 
-        if (result.userErrors.length > 0) {
-          const reason = result.userErrors.map((e) => e.message).join("; ");
+      try {
+        // Fire productUpdate and productVariantsBulkUpdate in parallel when product fields exist
+        const variantPromise = client.updateVariants(productId, group.map((g) => g.variantInput));
+        const productPromise = productFields
+          ? client.updateProduct(productId, {
+              title: productFields.title,
+              descriptionHtml: productFields.bodyHtml,
+              vendor: productFields.vendor,
+              productType: productFields.productType,
+            })
+          : Promise.resolve(null);
+
+        const [variantResult, productResult] = await Promise.all([variantPromise, productPromise]);
+
+        // Collect failure reasons from both operations (strictest merge)
+        const reasons: string[] = [];
+
+        if (variantResult.userErrors.length > 0) {
+          reasons.push(...variantResult.userErrors.map((e) => e.message));
+        }
+        if (productResult && productResult.userErrors.length > 0) {
+          reasons.push(...productResult.userErrors.map((e) => e.message));
+        }
+
+        if (reasons.length > 0) {
+          const reason = reasons.join("; ");
           for (const item of group) {
             rows.push({ row: item.row, lookupKey: item.lookupKey, status: "failed", reason });
           }

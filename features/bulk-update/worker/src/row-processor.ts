@@ -1,9 +1,16 @@
 import type { ParsedRow } from "./excel-parser";
-import type { ShopifyClient, VariantInput } from "./shopify-client";
+import type { ShopifyClient, VariantInput, ProductInput } from "./shopify-client";
 import { ShopifyClientError } from "./shopify-client";
 
+export interface ProductFields {
+  title?: string;
+  bodyHtml?: string;
+  vendor?: string;
+  productType?: string;
+}
+
 export type ProcessedRow =
-  | { type: "pending"; row: number; lookupKey: string; productId: string; variantInput: VariantInput }
+  | { type: "pending"; row: number; lookupKey: string; productId: string; variantInput: VariantInput; productFields?: ProductFields }
   | { type: "failed"; row: number; lookupKey: string; reason: string }
   | { type: "skipped"; row: number; lookupKey: string; reason: string };
 
@@ -12,9 +19,14 @@ export async function processRow(row: ParsedRow, client: ShopifyClient): Promise
     return { type: "skipped", row: row.row, lookupKey: "", reason: row.reason };
   }
 
-  const { row: rowNum, command, variantId, sku, newSku, price, compareAtPrice, cost } = row;
+  const { row: rowNum, command, variantId, sku, newSku, price, compareAtPrice, cost, title, bodyHtml, vendor, productType } = row;
 
-  if (!newSku && !price && !compareAtPrice && !cost) {
+  // A row is valid if it has at least one variant field OR at least one product field.
+  // The First-Row Rule (only first row of each product carries product fields) is enforced by the Batch Orchestrator.
+  const hasVariantFields = !!(newSku || price || compareAtPrice || cost);
+  const hasProductFields = !!(title || bodyHtml || vendor || productType);
+
+  if (!hasVariantFields && !hasProductFields) {
     return { type: "skipped", row: rowNum, lookupKey: variantId ?? sku ?? "", reason: "no fields to update" };
   }
 
@@ -49,5 +61,23 @@ export async function processRow(row: ParsedRow, client: ShopifyClient): Promise
   if (compareAtPrice !== undefined) variantInput.compareAtPrice = compareAtPrice;
   if (cost !== undefined) variantInput.cost = cost;
 
-  return { type: "pending", row: rowNum, lookupKey, productId: resolvedProductId, variantInput };
+  const productFieldsObj: ProductFields = {};
+  if (title !== undefined) productFieldsObj.title = title;
+  if (bodyHtml !== undefined) productFieldsObj.bodyHtml = bodyHtml;
+  if (vendor !== undefined) productFieldsObj.vendor = vendor;
+  if (productType !== undefined) productFieldsObj.productType = productType;
+
+  const pending: ProcessedRow & { type: "pending" } = {
+    type: "pending",
+    row: rowNum,
+    lookupKey,
+    productId: resolvedProductId,
+    variantInput,
+  };
+
+  if (hasProductFields) {
+    pending.productFields = productFieldsObj;
+  }
+
+  return pending;
 }

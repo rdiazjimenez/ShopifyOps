@@ -242,3 +242,101 @@ describe("ShopifyClient.resolveSkuToIds", () => {
     await expect(client.resolveSkuToIds("SKU-001")).rejects.toThrow(ShopifyClientError);
   });
 });
+
+describe("ShopifyClient.updateProduct", () => {
+  const PRODUCT_GID = "gid://shopify/Product/111";
+
+  it("sends productUpdate mutation with only non-empty fields", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: {
+            productUpdate: {
+              product: { id: PRODUCT_GID },
+              userErrors: [],
+            },
+          },
+        }),
+        { headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    const client = makeClient(fetchFn);
+    await client.updateProduct(PRODUCT_GID, { title: "New Title", vendor: "Acme" });
+
+    const body = JSON.parse(fetchFn.mock.calls[0][1].body as string);
+    expect(body.query).toContain("productUpdate");
+    expect(body.variables.input.title).toBe("New Title");
+    expect(body.variables.input.vendor).toBe("Acme");
+    expect("descriptionHtml" in body.variables.input).toBe(false);
+    expect("productType" in body.variables.input).toBe(false);
+  });
+
+  it("sends all fields when all are provided", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: {
+            productUpdate: {
+              product: { id: PRODUCT_GID },
+              userErrors: [],
+            },
+          },
+        }),
+        { headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    const client = makeClient(fetchFn);
+    await client.updateProduct(PRODUCT_GID, {
+      title: "T",
+      descriptionHtml: "<p>D</p>",
+      vendor: "V",
+      productType: "PT",
+    });
+
+    const body = JSON.parse(fetchFn.mock.calls[0][1].body as string);
+    expect(body.variables.input.title).toBe("T");
+    expect(body.variables.input.descriptionHtml).toBe("<p>D</p>");
+    expect(body.variables.input.vendor).toBe("V");
+    expect(body.variables.input.productType).toBe("PT");
+  });
+
+  it("normalizes numeric product ID to full GID", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: { productUpdate: { product: { id: PRODUCT_GID }, userErrors: [] } },
+        }),
+        { headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    const client = makeClient(fetchFn);
+    await client.updateProduct("111", { title: "T" });
+
+    const body = JSON.parse(fetchFn.mock.calls[0][1].body as string);
+    expect(body.variables.input.id).toBe("gid://shopify/Product/111");
+  });
+
+  it("returns userErrors from response", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: {
+            productUpdate: {
+              product: null,
+              userErrors: [{ field: ["title"], message: "Title is too long" }],
+            },
+          },
+        }),
+        { headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    const client = makeClient(fetchFn);
+    const result = await client.updateProduct(PRODUCT_GID, { title: "x".repeat(300) });
+    expect(result.userErrors).toHaveLength(1);
+    expect(result.userErrors[0]?.message).toBe("Title is too long");
+  });
+});
