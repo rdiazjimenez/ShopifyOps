@@ -37,7 +37,7 @@ export async function processRow(row: ParsedRow, client: ShopifyClient): Promise
   let resolvedProductId: string;
   let lookupKey = variantId ?? sku ?? rawProductId ?? "";  // updated inline for handle path
 
-  if (variantId) {
+  if (command !== "NEW" && variantId) {
     resolvedVariantId = variantId.startsWith("gid://") ? variantId : `gid://shopify/ProductVariant/${variantId}`;
     try {
       resolvedProductId = await client.resolveVariantToProductId(resolvedVariantId);
@@ -45,7 +45,7 @@ export async function processRow(row: ParsedRow, client: ShopifyClient): Promise
       const reason = err instanceof ShopifyClientError ? err.message : "Variant lookup failed";
       return { type: "failed", row: rowNum, lookupKey, reason };
     }
-  } else if (sku) {
+  } else if (command !== "NEW" && sku) {
     try {
       const ids = await client.resolveSkuToIds(sku);
       resolvedVariantId = ids.variantId;

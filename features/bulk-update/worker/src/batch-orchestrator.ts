@@ -32,21 +32,21 @@ export async function runBatch(
   // the first product-path row for a productId fires productUpdate;
   // subsequent product-path rows for the same productId are skipped as "duplicate product row".
   const pendingByProduct = new Map<string, Array<{ row: number; lookupKey: string; variantInput: VariantInput; productFields?: ProductFields; productPath?: true; createVariant?: true }>>();
-  const productPathSeen = new Set<string>();
+  const productSeen = new Set<string>();
   const productPathDuplicates = new Set<number>();
 
   for (const p of processed) {
     if (p.type === "pending") {
       if (p.productPath) {
-        if (productPathSeen.has(p.productId)) {
+        if (productSeen.has(p.productId)) {
           productPathDuplicates.add(p.row);
           continue;
         }
-        productPathSeen.add(p.productId);
       }
       const group = pendingByProduct.get(p.productId) ?? [];
       group.push({ row: p.row, lookupKey: p.lookupKey, variantInput: p.variantInput, productFields: p.productFields, productPath: p.productPath, createVariant: p.createVariant });
       pendingByProduct.set(p.productId, group);
+      productSeen.add(p.productId);
     }
   }
 

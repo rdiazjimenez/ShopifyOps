@@ -173,11 +173,6 @@ export class ShopifyClient {
     return { variantId: node.id, productId: node.product.id };
   }
 
-  /**
-   * Resolves a product handle to its product GID.
-   * Throws ShopifyClientError("Handle not found") when no product matches.
-   * Validated against Shopify Admin API schema (2026-04).
-   */
   async resolveProductToSingleVariantId(productId: string): Promise<string> {
     const result = await this.graphql<{
       product: { variants: { edges: Array<{ node: { id: string } }> } } | null;

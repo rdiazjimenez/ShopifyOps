@@ -210,6 +210,8 @@ Same UI capabilities as the Pages flavor: file picker, client-side sheet dropdow
 
 Good tests verify external behavior only — given an Excel file (or parsed rows) and a stubbed Shopify API, the correct mutations are called and the correct Result Report is returned. Tests should not assert on internal module calls or implementation sequence.
 
+**Behavioral boundary for Shopify Client stubs:** mutation methods (`updateVariants`, `updateProduct`, `createVariants`, `fetchProductTags`) are observable external behavior — asserting on them is permitted. Lookup/resolution methods (`resolveVariantToProductId`, `resolveSkuToIds`, `resolveHandleToProductId`, `resolveProductToSingleVariantId`) are internal implementation details — do not assert on whether or how they are called. Test the result shape (`type`, `productId`, `lookupKey`, `variantInput`, `productPath`) instead.
+
 ### Modules to test
 
 **Excel Parsing Module** — unit tested with fixture `.xlsx` files. Assert: correct row extraction, empty-cell skipping, unsupported Command skipping, missing sheet error, case-insensitive + trimmed header matching, duplicate header handling.
