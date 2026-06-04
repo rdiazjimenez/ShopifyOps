@@ -11,6 +11,7 @@ function makeClient(overrides: Partial<ShopifyClient> = {}): ShopifyClient {
     updateVariants: vi.fn().mockResolvedValue({ productVariants: [], userErrors: [] }),
     resolveSkuToIds: vi.fn().mockResolvedValue({ variantId: VARIANT_GID, productId: PRODUCT_GID }),
     resolveVariantToProductId: vi.fn().mockResolvedValue(PRODUCT_GID),
+    resolveHandleToProductId: vi.fn().mockResolvedValue(PRODUCT_GID),
     ...overrides,
   } as unknown as ShopifyClient;
 }
@@ -310,5 +311,104 @@ describe("processRow — product-path (Product ID, Issue #32)", () => {
     await processRow({ ...baseRow, productId: "111", title: "T" }, client);
     expect(client.resolveVariantToProductId).not.toHaveBeenCalled();
     expect(client.resolveSkuToIds).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("processRow - handle product-path (Issue #33)", () => {
+  it("row with Handle only (no Variant ID, no SKU, no Product ID) + product fields - pending with productPath", async () => {
+    const client = makeClient();
+    const result = await processRow({ ...baseRow, handle: "my-product", title: "New Title" }, client);
+    expect(result.type).toBe("pending");
+    if (result.type === "pending") {
+      expect(result.productPath).toBe(true);
+      expect(result.productId).toBe(PRODUCT_GID);
+      expect(result.productFields?.title).toBe("New Title");
+    }
+  });
+
+  it("resolveHandleToProductId is called with the handle value", async () => {
+    const client = makeClient();
+    await processRow({ ...baseRow, handle: "my-product", title: "T" }, client);
+    expect(client.resolveHandleToProductId).toHaveBeenCalledWith("my-product");
+  });
+
+  it("Handle not found - failed with reason Handle not found", async () => {
+    const client = makeClient({
+      resolveHandleToProductId: vi.fn().mockRejectedValue(new ShopifyClientError("Handle not found")),
+    });
+    const result = await processRow({ ...baseRow, handle: "missing-handle", title: "T" }, client);
+    expect(result.type).toBe("failed");
+    if (result.type === "failed") {
+      expect(result.reason).toBe("Handle not found");
+      expect(result.lookupKey).toBe("missing-handle");
+    }
+  });
+
+  it("Handle + variant field (price) - failed variant lookup key required for variant fields", async () => {
+    const client = makeClient();
+    const result = await processRow({ ...baseRow, handle: "my-product", price: "9.99" }, client);
+    expect(result.type).toBe("failed");
+    if (result.type === "failed") {
+      expect(result.reason).toBe("variant lookup key required for variant fields");
+      expect(result.lookupKey).toBe("my-product");
+    }
+  });
+
+  it("Handle + cost variant field - failed", async () => {
+    const client = makeClient();
+    const result = await processRow({ ...baseRow, handle: "my-product", cost: "3.00" }, client);
+    expect(result.type).toBe("failed");
+    if (result.type === "failed") {
+      expect(result.reason).toBe("variant lookup key required for variant fields");
+    }
+  });
+
+  it("Variant ID + Handle - Variant ID wins; resolveHandleToProductId not called", async () => {
+    const client = makeClient();
+    const result = await processRow({ ...baseRow, variantId: VARIANT_GID, handle: "my-product", price: "9.99" }, client);
+    expect(client.resolveVariantToProductId).toHaveBeenCalled();
+    expect(client.resolveHandleToProductId).not.toHaveBeenCalled();
+    expect(result.type).toBe("pending");
+    if (result.type === "pending") {
+      expect(result.productPath).toBeUndefined();
+    }
+  });
+
+  it("SKU + Handle - SKU wins; resolveHandleToProductId not called", async () => {
+    const client = makeClient();
+    const result = await processRow({ ...baseRow, sku: "SKU-001", handle: "my-product", price: "9.99" }, client);
+    expect(client.resolveSkuToIds).toHaveBeenCalledWith("SKU-001");
+    expect(client.resolveHandleToProductId).not.toHaveBeenCalled();
+    expect(result.type).toBe("pending");
+    if (result.type === "pending") {
+      expect(result.productPath).toBeUndefined();
+    }
+  });
+
+  it("Product ID + Handle - Product ID wins; resolveHandleToProductId not called", async () => {
+    const client = makeClient();
+    const result = await processRow({ ...baseRow, productId: "111", handle: "my-product", title: "T" }, client);
+    expect(client.resolveHandleToProductId).not.toHaveBeenCalled();
+    expect(result.type).toBe("pending");
+    if (result.type === "pending") {
+      expect(result.productId).toBe("gid://shopify/Product/111");
+    }
+  });
+
+  it("lookupKey equals the Handle string used in the row", async () => {
+    const client = makeClient();
+    const result = await processRow({ ...baseRow, handle: "cool-product", title: "T" }, client);
+    expect(result.type).toBe("pending");
+    if (result.type === "pending") {
+      expect(result.lookupKey).toBe("cool-product");
+    }
+  });
+
+  it("resolveHandleToProductId fires in dry-run (read-only lookup)", async () => {
+    const client = makeClient();
+    const result = await processRow({ ...baseRow, handle: "my-product", title: "T" }, client);
+    expect(client.resolveHandleToProductId).toHaveBeenCalled();
+    expect(result.type).toBe("pending");
   });
 });

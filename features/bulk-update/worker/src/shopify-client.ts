@@ -173,6 +173,27 @@ export class ShopifyClient {
     return { variantId: node.id, productId: node.product.id };
   }
 
+  /**
+   * Resolves a product handle to its product GID.
+   * Throws ShopifyClientError("Handle not found") when no product matches.
+   * Validated against Shopify Admin API schema (2026-04).
+   */
+  async resolveHandleToProductId(handle: string): Promise<string> {
+    const result = await this.graphql<{
+      product: { id: string } | null;
+    }>(
+      `query resolveHandleToProductId($identifier: ProductIdentifierInput!) {
+        product: productByIdentifier(identifier: $identifier) { id }
+      }`,
+      { identifier: { handle } }
+    );
+
+    if (!result.product) {
+      throw new ShopifyClientError("Handle not found");
+    }
+    return result.product.id;
+  }
+
   private async graphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
     let res: Response;
     try {

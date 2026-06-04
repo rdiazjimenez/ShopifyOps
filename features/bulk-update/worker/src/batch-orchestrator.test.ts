@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { runBatch } from "./batch-orchestrator";
 import type { ShopifyClient } from "./shopify-client";
+import { ShopifyClientError } from "./shopify-client";
 import { readFileSync } from "fs";
 import { join } from "path";
 
@@ -15,6 +16,7 @@ function makeClient(overrides: Partial<ShopifyClient> = {}): ShopifyClient {
     updateVariants: vi.fn().mockResolvedValue({ productVariants: [], userErrors: [] }),
     resolveSkuToIds: vi.fn(),
     resolveVariantToProductId: vi.fn(),
+    resolveHandleToProductId: vi.fn().mockResolvedValue(PRODUCT_A),
     updateProduct: vi.fn().mockResolvedValue({ product: { id: PRODUCT_A }, userErrors: [] }),
     fetchProductTags: vi.fn().mockResolvedValue([]),
     ...overrides,
@@ -753,5 +755,128 @@ describe("runBatch — product-path Product ID rows (Issue #32)", () => {
     const report = await runBatch(rows, client, false);
     expect(report.skipped).toBe(1);
     expect(report.rows[0]?.status).toBe("skipped");
+  });
+});
+
+describe("runBatch - handle product-path rows (Issue #33)", () => {
+  it("handle-path row: productUpdate fires, updateVariants not called", async () => {
+    const updateVariants = vi.fn().mockResolvedValue({ productVariants: [], userErrors: [] });
+    const updateProduct = vi.fn().mockResolvedValue({ product: { id: PRODUCT_A }, userErrors: [] });
+    const client = makeClient({
+      resolveHandleToProductId: vi.fn().mockResolvedValue(PRODUCT_A),
+      updateVariants,
+      updateProduct,
+    });
+
+    const rows = [
+      { skipped: false as const, row: 1, command: "UPDATE" as const, handle: "my-product", title: "New Title" },
+    ];
+
+    const report = await runBatch(rows, client, false);
+    expect(updateVariants).not.toHaveBeenCalled();
+    expect(updateProduct).toHaveBeenCalledTimes(1);
+    expect(report.succeeded).toBe(1);
+  });
+
+  it("handle-path row: lookupKey in Result Report equals the Handle string", async () => {
+    const client = makeClient({
+      resolveHandleToProductId: vi.fn().mockResolvedValue(PRODUCT_A),
+      updateProduct: vi.fn().mockResolvedValue({ product: { id: PRODUCT_A }, userErrors: [] }),
+    });
+
+    const rows = [
+      { skipped: false as const, row: 1, command: "UPDATE" as const, handle: "cool-product", title: "T" },
+    ];
+
+    const report = await runBatch(rows, client, false);
+    expect(report.rows[0]?.lookupKey).toBe("cool-product");
+  });
+
+  it("Handle not found - row failed, reason Handle not found", async () => {
+    const client = makeClient({
+      resolveHandleToProductId: vi.fn().mockRejectedValue(new ShopifyClientError("Handle not found")),
+    });
+
+    const rows = [
+      { skipped: false as const, row: 1, command: "UPDATE" as const, handle: "missing", title: "T" },
+    ];
+
+    const report = await runBatch(rows, client, false);
+    expect(report.failed).toBe(1);
+    expect(report.rows[0]?.reason).toBe("Handle not found");
+  });
+
+  it("duplicate handle-path row (same resolved productId) - second skipped 'duplicate product row'", async () => {
+    const updateProduct = vi.fn().mockResolvedValue({ product: { id: PRODUCT_A }, userErrors: [] });
+    const client = makeClient({
+      resolveHandleToProductId: vi.fn().mockResolvedValue(PRODUCT_A),
+      updateProduct,
+    });
+
+    const rows = [
+      { skipped: false as const, row: 1, command: "UPDATE" as const, handle: "my-product", title: "T1" },
+      { skipped: false as const, row: 2, command: "UPDATE" as const, handle: "my-product", vendor: "V2" },
+    ];
+
+    const report = await runBatch(rows, client, false);
+    expect(report.succeeded).toBe(1);
+    expect(report.skipped).toBe(1);
+    expect(report.rows.find(r => r.row === 2)?.reason).toBe("duplicate product row");
+    expect(updateProduct).toHaveBeenCalledTimes(1);
+  });
+
+  it("dry-run: resolveHandleToProductId fires but productUpdate suppressed", async () => {
+    const resolveHandleToProductId = vi.fn().mockResolvedValue(PRODUCT_A);
+    const updateProduct = vi.fn();
+    const client = makeClient({ resolveHandleToProductId, updateProduct });
+
+    const rows = [
+      { skipped: false as const, row: 1, command: "UPDATE" as const, handle: "my-product", title: "T" },
+    ];
+
+    const report = await runBatch(rows, client, true);
+    expect(resolveHandleToProductId).toHaveBeenCalled();
+    expect(updateProduct).not.toHaveBeenCalled();
+    expect(report.rows[0]?.status).toBe("success");
+    expect(report.succeeded).toBe(1);
+  });
+
+  it("ID wins over Handle: Product ID present - resolveHandleToProductId not called", async () => {
+    const resolveHandleToProductId = vi.fn();
+    const client = makeClient({
+      resolveHandleToProductId,
+      updateProduct: vi.fn().mockResolvedValue({ product: { id: PRODUCT_A }, userErrors: [] }),
+    });
+
+    const rows = [
+      { skipped: false as const, row: 1, command: "UPDATE" as const, productId: "111", handle: "my-product", title: "T" },
+    ];
+
+    await runBatch(rows, client, false);
+    expect(resolveHandleToProductId).not.toHaveBeenCalled();
+  });
+
+  it("variant row before handle-path row (reversed order) → both updateVariants and updateProduct fire", async () => {
+    const updateVariants = vi.fn().mockResolvedValue({ productVariants: [], userErrors: [] });
+    const updateProduct = vi.fn().mockResolvedValue({ product: { id: PRODUCT_A }, userErrors: [] });
+    const client = makeClient({
+      resolveVariantToProductId: vi.fn().mockResolvedValue(PRODUCT_A),
+      resolveHandleToProductId: vi.fn().mockResolvedValue(PRODUCT_A),
+      updateVariants,
+      updateProduct,
+    });
+
+    const rows = [
+      // variant row first
+      { skipped: false as const, row: 1, command: "UPDATE" as const, variantId: VARIANT_1, price: "9.99" },
+      // handle-path row second for same product
+      { skipped: false as const, row: 2, command: "UPDATE" as const, handle: "my-product", title: "New Title" },
+    ];
+
+    const report = await runBatch(rows, client, false);
+    expect(updateVariants).toHaveBeenCalledTimes(1);
+    expect(updateProduct).toHaveBeenCalledTimes(1);
+    expect(updateProduct).toHaveBeenCalledWith(PRODUCT_A, expect.objectContaining({ title: "New Title" }));
+    expect(report.succeeded).toBe(2);
   });
 });

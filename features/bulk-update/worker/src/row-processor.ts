@@ -30,12 +30,12 @@ export async function processRow(row: ParsedRow, client: ShopifyClient): Promise
   const hasProductFields = !!(title || bodyHtml || vendor || productType || status || tags);
 
   if (!hasVariantFields && !hasProductFields) {
-    return { type: "skipped", row: rowNum, lookupKey: variantId ?? sku ?? rawProductId ?? "", reason: "no fields to update" };
+    return { type: "skipped", row: rowNum, lookupKey: variantId ?? sku ?? rawProductId ?? row.handle ?? "", reason: "no fields to update" };
   }
 
   let resolvedVariantId: string;
   let resolvedProductId: string;
-  const lookupKey = variantId ?? sku ?? rawProductId ?? "";
+  const lookupKey = variantId ?? sku ?? rawProductId ?? "";  // handle is used inline when reached
 
   if (variantId) {
     resolvedVariantId = variantId.startsWith("gid://") ? variantId : `gid://shopify/ProductVariant/${variantId}`;
@@ -92,6 +92,41 @@ export async function processRow(row: ParsedRow, client: ShopifyClient): Promise
       productPathPending.productFields = productFieldsObj;
     }
     return productPathPending;
+  } else if (row.handle) {
+    // Handle product-path lookup: Handle present, no variant identifier and no Product ID
+    const handle = row.handle;
+    if (hasVariantFields) {
+      return { type: "failed", row: rowNum, lookupKey: handle, reason: "variant lookup key required for variant fields" };
+    }
+    let resolvedHandleProductId: string;
+    try {
+      resolvedHandleProductId = await client.resolveHandleToProductId(handle);
+    } catch (err) {
+      const reason = err instanceof ShopifyClientError ? err.message : "Handle lookup failed";
+      return { type: "failed", row: rowNum, lookupKey: handle, reason };
+    }
+
+    const productFieldsObj: ProductFields = {};
+    if (title !== undefined) productFieldsObj.title = title;
+    if (bodyHtml !== undefined) productFieldsObj.bodyHtml = bodyHtml;
+    if (vendor !== undefined) productFieldsObj.vendor = vendor;
+    if (productType !== undefined) productFieldsObj.productType = productType;
+    if (status !== undefined) productFieldsObj.status = status;
+    if (tags !== undefined) productFieldsObj.tags = tags;
+    if (tagsCommand !== undefined) productFieldsObj.tagsCommand = tagsCommand;
+
+    const handlePathPending: ProcessedRow & { type: "pending" } = {
+      type: "pending",
+      row: rowNum,
+      lookupKey: handle,
+      productId: resolvedHandleProductId,
+      variantInput: { id: resolvedHandleProductId }, // sentinel
+      productPath: true,
+    };
+    if (hasProductFields) {
+      handlePathPending.productFields = productFieldsObj;
+    }
+    return handlePathPending;
   } else {
     return { type: "failed", row: rowNum, lookupKey: "", reason: "no lookup key" };
   }
