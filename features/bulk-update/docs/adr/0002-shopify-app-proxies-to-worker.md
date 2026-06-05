@@ -1,7 +1,7 @@
 # ADR 0002 — Shopify app action proxies to worker, does not call Shopify API directly
 
 ## Status
-Accepted
+Superseded by ADR 0003
 
 ## Context
 The Shopify embedded app could call the Shopify Admin API directly using the session token, duplicating the parsing and mutation logic from the worker. Alternatively it can proxy to the existing worker (identical to the `frontend-pages/` Pages Function pattern).

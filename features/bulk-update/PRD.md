@@ -6,9 +6,9 @@ Updating prices, compare-at prices, and costs across hundreds of Shopify variant
 
 ## Solution
 
-A Cloudflare Worker (TypeScript) that accepts an Excel Workbook upload and a sheet name, parses each row using Matrixify-compatible column format, and applies the changes to Shopify via the Admin GraphQL API. The worker returns a Result Report detailing per-row outcomes (success, failed, skipped). An optional dry-run mode lets users validate changes before committing them.
+A Shopify Admin embedded app (Polaris UI, hosted on Vercel) that accepts an Excel Workbook upload, parses each row using Matrixify-compatible column format, and applies changes directly to the installed store via the Admin GraphQL API using the active session credentials. Returns a Result Report detailing per-row outcomes (success, failed, skipped). An optional dry-run mode lets users validate changes before committing them.
 
-Three frontend flavors share the same worker backend: **Cloudflare Pages + Access** (browser UI, Google SSO), **Shopify Admin embedded app** (Polaris UI inside Shopify Admin, Shopify session auth, hosted on Vercel), and **headless HTTP** (curl/API, `X-Api-Key` only). Each flavor lets the merchant upload a workbook, select a sheet, toggle dry-run, view results, and download an Annotated Workbook.
+The embedded app is the primary and only actively-deployed path. Two legacy paths remain as frozen code in the repo — **Cloudflare Pages + Access** (browser UI, Google SSO, proxies to Worker) and **headless HTTP** (curl/API, `X-Api-Key` to Worker) — but neither is actively deployed or maintained. See ADR 0003.
 
 ## User Stories
 
@@ -28,42 +28,41 @@ Three frontend flavors share the same worker backend: **Cloudflare Pages + Acces
 12. As a merchant, I want rows with unsupported Command values (`DELETE`, `REPLACE`, `IGNORE`, and other unknown values) counted as skipped, so that I can use my full Matrixify workbook without stripping those rows first.
 13. As a merchant, I want to open a browser UI, upload my workbook, and see results without writing code or using curl, so that I can operate the tool independently.
 14. As a merchant, I want to download an Annotated Workbook after the operation with Status and Reason per row plus a Results summary sheet, so that I have a record and can fix failures in the same file.
-15. As a merchant, I want the worker to handle hundreds of rows within a reasonable time, so that large catalogue updates don't time out.
+15. As a merchant, I want the app to handle hundreds of rows within a reasonable time, so that large catalogue updates don't time out.
 16. As a merchant, I want price, compare-at price, and cost updates grouped by product in a single mutation per product, so that updates are efficient and don't hit Shopify rate limits.
-17. As a developer, I want Shopify credentials and the API key stored as Cloudflare Worker secrets, so that they are never exposed in source code or logs.
+17. As a developer, I want the app to use the active Shopify session credentials automatically, so that no store domain or access token needs to be configured in Vercel env vars.
 18. As a developer, I want the Excel parsing logic isolated from the Shopify mutation logic, so that each can be tested independently.
-19. As a developer, I want the worker to return structured JSON for both success and error cases, so that any caller can parse and act on the result.
-20. As a developer, I want the dry-run flag passed as a query parameter (`?dryRun=true`), so that it can be toggled without changing the request body.
-21. As a developer, I want the worker to reject requests without a valid `X-Api-Key` header, so that the endpoint is not open to the public internet.
-22. As a developer, I want the API key never sent to the browser, so that it cannot be extracted from DevTools or network traffic.
+19. As a developer, I want the app action to return structured JSON for both success and error cases, so that the UI can parse and display results without crashing.
+20. As a developer, I want the dry-run flag passed as a form field, so that it can be toggled without changing the file upload flow.
+21. As a developer, I want unauthenticated requests to the app action to be rejected before any parsing or API calls occur, so that no work happens without a valid Shopify session.
+22. As a developer, I want the `BulkUpdateShopifyClient` interface to abstract GraphQL transport, so that row processor and batch orchestrator can be tested in isolation with a mock client.
 
 ## Implementation Decisions
 
 ### Runtime
-Cloudflare Worker, TypeScript. Deployed automatically via Cloudflare Workers Builds (GitHub integration — `rdiazjimenez/ShopifyOps`, branch `main`). Manual deploy via Wrangler available as fallback. Paid plan required for CPU time headroom with large batches.
+Vercel (Node.js), React Router (Remix). The embedded app is the only actively-deployed runtime. The frozen Cloudflare Worker remains in the repo for the legacy standalone paths but is not deployed. See ADR 0003.
 
 ### Shopify API Version
-`2026-04`. Pinned in the Shopify Client Module and `wrangler.toml`. Do not use `unstable` or `latest`.
+`2026-04`. Pinned in `InstalledShopifyClient`. Do not use `unstable` or `latest`.
 
 ### Required Shopify API Scopes
 `write_products`, `read_products`, `write_inventory`, `read_inventory`.
 
 Note: `write_inventory` is required because cost is updated via the `inventoryItem` input on `productVariantsBulkUpdate`, which writes to the InventoryItem record.
 
-### HTTP Interface
-- `POST /bulk-update?sheet=<sheetName>&dryRun=<true|false>`
-- Header: `X-Api-Key: <value>` — required; matches CF secret `API_KEY`
-- Body: `multipart/form-data`, field name `file`
-- Response: JSON Result Report
+### Action Interface
+- `POST` to React Router action on the index route
+- Body: `multipart/form-data` — fields: `file` (xlsx blob), `sheet` (string), `dryRun` (boolean string)
+- Response: JSON `ResultReport`
 
 ### Auth
-Worker checks `X-Api-Key` header against CF secret `API_KEY`. Returns HTTP 401 on mismatch or absence. The Frontend proxy injects this header server-side; browser never sees the key.
+`authenticate.admin(request)` from `@shopify/shopify-app-remix`. Unauthenticated requests are rejected before any parsing occurs. Session storage via Prisma + Neon Postgres.
 
 ### Excel Parsing Module
 Accepts raw Excel file bytes and a sheet name. Returns an array of parsed rows (typed records). Column header matching is case-insensitive and whitespace-trimmed. Duplicate headers: last column wins. No Shopify knowledge.
 
-### Shopify Client Module
-Wraps Shopify Admin GraphQL API (version `2026-04`). Responsibilities: update variants (price, compareAtPrice, cost, sku) in a single `productVariantsBulkUpdate` mutation per product group; update product fields via `productUpdate`; create new variants via `productVariantsBulkCreate`; resolve Variant ID / SKU / Handle / Product ID to internal IDs; surface typed errors for not-found and ambiguous-SKU cases. Omitted fields are never sent. No Excel knowledge. No separate `inventoryItemUpdate` mutation — cost travels via `inventoryItem.cost` inside the bulk variant mutation.
+### BulkUpdateShopifyClient Interface + InstalledShopifyClient
+`BulkUpdateShopifyClient` is the TypeScript interface that abstracts Shopify Admin GraphQL transport. `InstalledShopifyClient` implements it using `admin.graphql()` from the active session. Responsibilities: update variants (price, compareAtPrice, cost, sku) in a single `productVariantsBulkUpdate` mutation per product group; update product fields via `productUpdate`; create new variants via `productVariantsBulkCreate`; resolve Variant ID / SKU / Handle / Product ID to internal IDs; surface typed errors for not-found and ambiguous-SKU cases. Omitted fields are never sent. No Excel knowledge. No separate `inventoryItemUpdate` mutation — cost travels via `inventoryItem.cost` inside the bulk variant mutation. SKU lookup uses exact field-scoped query (`sku:"..."`) with quote/backslash escaping.
 
 ### Cost Mutation Approach
 Cost is updated via `inventoryItem { cost }` nested inside `productVariantsBulkUpdate` — not via a separate `inventoryItemUpdate` call. This keeps price and cost in one mutation per product group, reducing API calls. Confirmed against Shopify `ProductVariantsBulkInput` schema which exposes `inventoryItem.cost`.
@@ -174,15 +173,14 @@ Annotated Workbook: generated client-side after response — original sheet with
 ### Frontend (Shopify Admin Embedded App)
 React Router app hosted on Vercel, embedded inside Shopify Admin via a custom distribution app registered in Shopify Partners (single store, no App Review). Polaris components + App Bridge provide native Admin chrome. `@shopify/shopify-app-remix` handles OAuth and session token validation. Sessions stored in Vercel Postgres (Neon free tier) via Prisma.
 
-The React Router `action` validates the Shopify session, then proxies the multipart POST to the worker — injecting `X-Api-Key` from `API_KEY` Vercel env var and forwarding `sheet` and `dryRun` query params. Worker response is streamed back to the client unchanged. `API_KEY` is never sent to the browser. All product logic remains in the worker.
+The React Router `action` calls `authenticate.admin(request)` and runs the Bulk Operation directly — no proxy to the Worker. Business logic (excel parser, row processor, batch orchestrator) lives in `app/services/bulk-update/`. The `BulkUpdateShopifyClient` interface abstracts GraphQL transport; `InstalledShopifyClient` implements it using `admin.graphql()`. No `WORKER_URL`, `API_KEY`, `SHOPIFY_STORE_DOMAIN`, or `SHOPIFY_ACCESS_TOKEN` env vars are required by the app.
 
-Same UI capabilities as the Pages flavor: file picker, client-side sheet dropdown (SheetJS npm package), dry-run toggle, submit, loading state, Result Report display, client-side Annotated Workbook download.
+UI capabilities: file picker, client-side sheet dropdown (SheetJS npm package), dry-run toggle, submit, loading state, Result Report display, client-side Annotated Workbook download.
 
 ## Acceptance Criteria
 
-- **Auth:** Request without `X-Api-Key` returns 401. Wrong key returns 401. Correct key proceeds.
-- **Missing sheet:** Sheet name not found in workbook returns 400 with descriptive error.
-- **Dry run:** `?dryRun=true` returns Result Report with zero mutations sent to Shopify.
+- **Missing sheet:** Sheet name not found in workbook returns an action error with descriptive message.
+- **Dry run:** `dryRun=true` form field returns Result Report with zero mutations sent to Shopify.
 - **Skipped commands:** Rows with `Command = DELETE/REPLACE/IGNORE` appear in `rows[]` with `status: "skipped"`. No lookup or API call is made.
 - **NEW — creates variant:** Row with `Command = NEW` and a valid Product ID or Handle creates a new variant via `productVariantsBulkCreate`; `Variant SKU` is set as a field on the new variant, not used as a lookup key.
 - **NEW — no product key:** Row with `Command = NEW` and no Product ID and no Handle fails with reason `"no lookup key"`.
@@ -198,9 +196,9 @@ Same UI capabilities as the Pages flavor: file picker, client-side sheet dropdow
 - **Grouped mutation:** Variants belonging to the same product are sent in one `productVariantsBulkUpdate` call, not one call per variant.
 - **Partial/userErrors:** Shopify `userErrors` on a product group marks all variants in that group as failed; other product groups are unaffected.
 - **Combined mutation result:** When both `productUpdate` and `productVariantsBulkUpdate` fire for a product group, strictest outcome wins: if either returns `userErrors`, all rows in the group are `failed` with reasons concatenated.
-- **Shopify app — unauthenticated rejected:** Request to the React Router action without a valid Shopify session is rejected; worker is never called.
-- **Shopify app — proxy injects key:** Valid Shopify session results in request forwarded to worker with `X-Api-Key` header set from `API_KEY` env var.
-- **Shopify app — key never exposed:** `API_KEY` value does not appear in any response body, client bundle, or browser-visible header.
+- **Shopify app — unauthenticated rejected:** Request to the React Router action without a valid Shopify session is rejected before any parsing or API calls occur.
+- **Shopify app — direct execution:** Valid Shopify session results in the action running business logic directly via `admin.graphql()`; no outbound request to the Worker.
+- **Shopify app — no Worker env vars:** `WORKER_URL`, `API_KEY`, `SHOPIFY_STORE_DOMAIN`, `SHOPIFY_ACCESS_TOKEN` are absent from the app's required env vars.
 - **Result Report invariants:** `total === succeeded + failed + skipped` and `rows.length === total` in all cases.
 - **SKU update:** Row with `Variant ID` and `Variant SKU` updates the variant's SKU.
 - **No-op row:** Row with valid command and lookup key but no variant fields (price, compareAtPrice, cost, sku) AND no product fields (title, bodyHtml, vendor, type, tags, status) appears as `skipped`, reason `"no fields to update"`.
@@ -216,7 +214,7 @@ Good tests verify external behavior only — given an Excel file (or parsed rows
 
 **Excel Parsing Module** — unit tested with fixture `.xlsx` files. Assert: correct row extraction, empty-cell skipping, unsupported Command skipping, missing sheet error, case-insensitive + trimmed header matching, duplicate header handling.
 
-**Shopify Client Module** — unit tested with stubbed HTTP layer. Assert: single mutation carries sku + price + compareAtPrice + cost; omitted fields absent from variables; `userErrors` mapped correctly; SKU not found and SKU ambiguous both throw typed errors; numeric IDs normalized to GIDs.
+**`InstalledShopifyClient`** — unit tested with mocked `admin.graphql`. Assert: single mutation carries sku + price + compareAtPrice + cost; omitted fields absent from variables; `userErrors` mapped correctly; SKU not found and SKU ambiguous both throw typed errors; numeric IDs normalized to GIDs; SKU lookup uses exact field-scoped query (`sku:"..."`). Prior art: worker's `shopify-client.test.ts`.
 
 **Row Processor Module** — unit tested with stubbed Shopify Client. Assert: Variant ID takes precedence over SKU; no-op row returns `skipped`; UPDATE/MERGE both fail when variant not found; `NEW` command dispatches create and ignores SKU as lookup key; single-variant auto-resolve promotes product-path row to variant-path; correct shape returned.
 
@@ -236,12 +234,13 @@ Prior art: `excel-parser.test.ts`, `shopify-client.test.ts`, `row-processor.test
 - Multi-store support
 - Money format validation (delegated to Shopify; invalid formats return `userErrors`)
 - Chunking / streaming for very large batches (revisit if hit in practice)
-- Shopify Admin embedded app is in scope as UI/proxy only — product logic remains in the worker
+- Shared npm package / monorepo extraction of business logic between app and frozen Worker
+- Any changes to the frozen Worker or `frontend-pages/` source
+- Cloudflare infrastructure (Worker and Pages paths are frozen, not deployed)
 
 ## Further Notes
 
-- The Matrixify demo workbook (`ImportProducts-Demo.xlsx`) in the repo root serves as the reference for column format and is used as a test fixture.
-- Cloudflare Workers free plan has a 10ms CPU time limit — paid plan required for batch sizes in the hundreds.
-- Cost is updated via `inventoryItem { cost }` nested inside `productVariantsBulkUpdate` — no separate `inventoryItemUpdate` call. This was confirmed against the Shopify `ProductVariantsBulkInput` schema.
+- The Matrixify demo workbook (`ImportProducts-Demo.xlsx`) serves as the reference for column format and is used as a test fixture.
+- Cost is updated via `inventoryItem { cost }` nested inside `productVariantsBulkUpdate` — no separate `inventoryItemUpdate` call. Confirmed against the Shopify `ProductVariantsBulkInput` schema.
 - Idempotency: the Result Report lets merchants safely re-run the same workbook after fixing errors — already-correct values are unchanged by the update.
-- The `xlsx` CDN dependency on the frontend should be pinned to a specific version with a subresource integrity hash.
+- The `xlsx` npm package in the app should be kept at a pinned version.
