@@ -1,9 +1,21 @@
 # This file stores configurations for your Shopify app.
 
 client_id = "cba7ce90b94857afd029308f7de4a13c"
+name = "ShopOps"
+application_url = "https://shopify-ops.vercel.app"
+embedded = true
+
+[build]
+automatically_update_urls_on_dev = true
+dev_store_url = "ilafiu-dev.myshopify.com"
 
 [access_scopes]
 scopes = "read_products,write_products,read_inventory,write_inventory"
+optional_scopes = []
+use_legacy_install_flow = false
+
+[auth]
+redirect_urls = ["https://shopify-ops.vercel.app/auth/callback"]
 
 [webhooks]
 api_version = "2026-04"
