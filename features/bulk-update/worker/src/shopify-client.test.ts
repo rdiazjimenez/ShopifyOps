@@ -233,6 +233,21 @@ describe("ShopifyClient.resolveSkuToIds", () => {
     expect(body.query).toContain("first: 2");
   });
 
+  it("searches by exact SKU field", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ data: { productVariants: { edges: [{ node: { id: VARIANT_GID, product: { id: PRODUCT_GID } } }] } } }),
+        { headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    const client = makeClient(fetchFn);
+    await client.resolveSkuToIds('SKU "001"');
+
+    const body = JSON.parse(fetchFn.mock.calls[0][1].body as string);
+    expect(body.variables.sku).toBe('sku:"SKU \\"001\\""');
+  });
+
   it("throws ShopifyClientError on HTTP error", async () => {
     const fetchFn = vi.fn().mockResolvedValue(
       new Response("Server Error", { status: 500 })

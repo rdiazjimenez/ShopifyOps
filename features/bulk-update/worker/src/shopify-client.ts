@@ -152,6 +152,7 @@ export class ShopifyClient {
   }
 
   async resolveSkuToIds(sku: string): Promise<ResolvedIds> {
+    const query = `sku:${quoteSearchValue(sku)}`;
     const result = await this.graphql<{
       productVariants: {
         edges: Array<{ node: { id: string; product: { id: string } } }>;
@@ -162,7 +163,7 @@ export class ShopifyClient {
           edges { node { id product { id } } }
         }
       }`,
-      { sku }
+      { sku: query }
     );
 
     const edges = result.productVariants.edges;
@@ -321,4 +322,8 @@ function normalizeVariantGid(id: string): string {
 function normalizeProductGid(id: string): string {
   if (id.startsWith('gid://')) return id;
   return `gid://shopify/Product/${id}`;
+}
+
+function quoteSearchValue(value: string): string {
+  return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
