@@ -1,4 +1,4 @@
 {
-  "buildCommand": "npx prisma generate && remix vite:build",
+  "buildCommand": "npx prisma generate && npx remix vite:build",
   "framework": "remix"
 }
