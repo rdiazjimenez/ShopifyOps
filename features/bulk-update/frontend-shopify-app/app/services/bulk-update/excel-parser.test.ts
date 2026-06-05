@@ -216,6 +216,38 @@ describe("parseExcel – empty cells omitted", () => {
     expect(row.newSku).toBe("NEW-SKU");
     expect("sku" in row).toBe(false);
   });
+
+  it("treats Variant SKU as newSku when Handle is present (no Variant ID)", () => {
+    const buf = buildWorkbook("Sheet1", [
+      { Command: "UPDATE", Handle: "my-handle", "Variant SKU": "NEW-SKU", "Variant Price": "9.99" },
+    ]);
+    const rows = parseExcel(buf, "Sheet1");
+    const row = rows[0] as Extract<ParsedRow, { skipped: false }>;
+    expect(row.newSku).toBe("NEW-SKU");
+    expect("sku" in row).toBe(false);
+    expect(row.handle).toBe("my-handle");
+  });
+
+  it("treats Variant SKU as newSku when Product ID is present (no Handle, no Variant ID)", () => {
+    const buf = buildWorkbook("Sheet1", [
+      { Command: "UPDATE", ID: "111", "Variant SKU": "NEW-SKU", "Variant Price": "9.99" },
+    ]);
+    const rows = parseExcel(buf, "Sheet1");
+    const row = rows[0] as Extract<ParsedRow, { skipped: false }>;
+    expect(row.newSku).toBe("NEW-SKU");
+    expect("sku" in row).toBe(false);
+    expect(row.productId).toBe("111");
+  });
+
+  it("keeps Variant SKU as lookup sku when it is the only identifier (no Handle, no Product ID, no Variant ID)", () => {
+    const buf = buildWorkbook("Sheet1", [
+      { Command: "UPDATE", "Variant SKU": "LOOKUP-SKU" },
+    ]);
+    const rows = parseExcel(buf, "Sheet1");
+    const row = rows[0] as Extract<ParsedRow, { skipped: false }>;
+    expect(row.sku).toBe("LOOKUP-SKU");
+    expect("newSku" in row).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------

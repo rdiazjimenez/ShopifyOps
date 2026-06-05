@@ -35,24 +35,78 @@ export async function processRow(row: ParsedRow, client: BulkUpdateShopifyClient
 
   let resolvedVariantId: string;
   let resolvedProductId: string;
-  let lookupKey = variantId ?? sku ?? rawProductId ?? "";  // updated inline for handle path
+  // Lookup key priority mirrors the resolution chain: Handle -> Product ID -> Variant ID -> SKU
+  let lookupKey = row.handle ?? rawProductId ?? variantId ?? sku ?? "";
 
-  if (command !== "NEW" && variantId) {
-    resolvedVariantId = variantId.startsWith("gid://") ? variantId : `gid://shopify/ProductVariant/${variantId}`;
+  if (row.handle && row.handle.trim()) {
+    const handle = row.handle;
+    lookupKey = handle;
+
+    const productFieldsObj: ProductFields = {};
+    if (title !== undefined) productFieldsObj.title = title;
+    if (bodyHtml !== undefined) productFieldsObj.bodyHtml = bodyHtml;
+    if (vendor !== undefined) productFieldsObj.vendor = vendor;
+    if (productType !== undefined) productFieldsObj.productType = productType;
+    if (status !== undefined) productFieldsObj.status = status;
+    if (tags !== undefined) productFieldsObj.tags = tags;
+    if (tagsCommand !== undefined) productFieldsObj.tagsCommand = tagsCommand;
+
+    let resolvedHandleProductId: string;
     try {
-      resolvedProductId = await client.resolveVariantToProductId(resolvedVariantId);
+      resolvedHandleProductId = await client.resolveHandleToProductId(handle);
     } catch (err) {
-      const reason = err instanceof ShopifyClientError ? err.message : "Variant lookup failed";
-      return { type: "failed", row: rowNum, lookupKey, reason };
+      const reason = err instanceof ShopifyClientError ? err.message : "Handle lookup failed";
+      return { type: "failed", row: rowNum, lookupKey: handle, reason };
     }
-  } else if (command !== "NEW" && sku) {
-    try {
-      const ids = await client.resolveSkuToIds(sku);
-      resolvedVariantId = ids.variantId;
-      resolvedProductId = ids.productId;
-    } catch (err) {
-      const reason = err instanceof ShopifyClientError ? err.message : "SKU lookup failed";
-      return { type: "failed", row: rowNum, lookupKey, reason };
+
+    if (command === "NEW") {
+      if (!hasVariantFields) {
+        return { type: "failed", row: rowNum, lookupKey: handle, reason: "NEW command requires at least one variant field" };
+      }
+      const variantInput: VariantInput = { id: resolvedHandleProductId }; // sentinel -- not used as variant GID
+      if (newSku !== undefined) variantInput.sku = newSku;
+      if (price !== undefined) variantInput.price = price;
+      if (compareAtPrice !== undefined) variantInput.compareAtPrice = compareAtPrice;
+      if (cost !== undefined) variantInput.cost = cost;
+      const createPending: ProcessedRow & { type: "pending" } = {
+        type: "pending",
+        row: rowNum,
+        lookupKey: handle,
+        productId: resolvedHandleProductId,
+        variantInput,
+        createVariant: true,
+      };
+      if (hasProductFields) createPending.productFields = productFieldsObj;
+      return createPending;
+    }
+
+    if (hasVariantFields) {
+      if (variantId) {
+        // Variant ID present alongside Handle: use Variant ID directly -- no resolveProductToSingleVariantId needed.
+        resolvedVariantId = variantId.startsWith("gid://") ? variantId : ("gid://shopify/ProductVariant/" + variantId);
+        resolvedProductId = resolvedHandleProductId;
+      } else {
+        // Auto-resolve: product has exactly one variant -- resolve and fall through to variant update.
+        try {
+          resolvedVariantId = await client.resolveProductToSingleVariantId(resolvedHandleProductId);
+          resolvedProductId = resolvedHandleProductId;
+        } catch (err) {
+          const reason = err instanceof ShopifyClientError ? err.message : "Variant lookup failed";
+          return { type: "failed", row: rowNum, lookupKey: handle, reason };
+        }
+      }
+    } else {
+      // Product-path: no variant fields -- update product fields only.
+      const handlePathPending: ProcessedRow & { type: "pending" } = {
+        type: "pending",
+        row: rowNum,
+        lookupKey: handle,
+        productId: resolvedHandleProductId,
+        variantInput: { id: resolvedHandleProductId }, // sentinel
+        productPath: true,
+      };
+      if (hasProductFields) handlePathPending.productFields = productFieldsObj;
+      return handlePathPending;
     }
   } else if (rawProductId) {
     // Normalize Product ID to GID (no API call required)
@@ -63,7 +117,7 @@ export async function processRow(row: ParsedRow, client: BulkUpdateShopifyClient
       }
       normalizedProductId = rawProductId;
     } else {
-      normalizedProductId = `gid://shopify/Product/${rawProductId}`;
+      normalizedProductId = "gid://shopify/Product/" + rawProductId;
     }
 
     const productFieldsObj: ProductFields = {};
@@ -79,7 +133,7 @@ export async function processRow(row: ParsedRow, client: BulkUpdateShopifyClient
       if (!hasVariantFields) {
         return { type: "failed", row: rowNum, lookupKey: rawProductId, reason: "NEW command requires at least one variant field" };
       }
-      const variantInput: VariantInput = { id: normalizedProductId }; // sentinel — not used as variant GID
+      const variantInput: VariantInput = { id: normalizedProductId }; // sentinel -- not used as variant GID
       if (newSku !== undefined) variantInput.sku = newSku;
       if (price !== undefined) variantInput.price = price;
       if (compareAtPrice !== undefined) variantInput.compareAtPrice = compareAtPrice;
@@ -97,16 +151,22 @@ export async function processRow(row: ParsedRow, client: BulkUpdateShopifyClient
     }
 
     if (hasVariantFields) {
-      // Auto-resolve: product has exactly one variant — resolve and fall through to variant update.
-      try {
-        resolvedVariantId = await client.resolveProductToSingleVariantId(normalizedProductId);
+      if (variantId) {
+        // Variant ID present alongside Product ID: use Variant ID directly -- no resolveProductToSingleVariantId needed.
+        resolvedVariantId = variantId.startsWith("gid://") ? variantId : ("gid://shopify/ProductVariant/" + variantId);
         resolvedProductId = normalizedProductId;
-      } catch (err) {
-        const reason = err instanceof ShopifyClientError ? err.message : "Variant lookup failed";
-        return { type: "failed", row: rowNum, lookupKey: rawProductId, reason };
+      } else {
+        // Auto-resolve: product has exactly one variant -- resolve and fall through to variant update.
+        try {
+          resolvedVariantId = await client.resolveProductToSingleVariantId(normalizedProductId);
+          resolvedProductId = normalizedProductId;
+        } catch (err) {
+          const reason = err instanceof ShopifyClientError ? err.message : "Variant lookup failed";
+          return { type: "failed", row: rowNum, lookupKey: rawProductId, reason };
+        }
       }
     } else {
-      // Product-path: no variant fields — update product fields only.
+      // Product-path: no variant fields -- update product fields only.
       const productPathPending: ProcessedRow & { type: "pending" } = {
         type: "pending",
         row: rowNum,
@@ -118,68 +178,23 @@ export async function processRow(row: ParsedRow, client: BulkUpdateShopifyClient
       if (hasProductFields) productPathPending.productFields = productFieldsObj;
       return productPathPending;
     }
-  } else if (row.handle && row.handle.trim()) {
-    const handle = row.handle;
-    lookupKey = handle; // update for fall-through to variant building
-    let resolvedHandleProductId: string;
+  } else if (command !== "NEW" && variantId) {
+    // Standalone Variant ID (no product anchor): resolve product via API.
+    resolvedVariantId = variantId.startsWith("gid://") ? variantId : ("gid://shopify/ProductVariant/" + variantId);
     try {
-      resolvedHandleProductId = await client.resolveHandleToProductId(handle);
+      resolvedProductId = await client.resolveVariantToProductId(resolvedVariantId);
     } catch (err) {
-      const reason = err instanceof ShopifyClientError ? err.message : "Handle lookup failed";
-      return { type: "failed", row: rowNum, lookupKey: handle, reason };
+      const reason = err instanceof ShopifyClientError ? err.message : "Variant lookup failed";
+      return { type: "failed", row: rowNum, lookupKey: variantId, reason };
     }
-
-    const productFieldsObj: ProductFields = {};
-    if (title !== undefined) productFieldsObj.title = title;
-    if (bodyHtml !== undefined) productFieldsObj.bodyHtml = bodyHtml;
-    if (vendor !== undefined) productFieldsObj.vendor = vendor;
-    if (productType !== undefined) productFieldsObj.productType = productType;
-    if (status !== undefined) productFieldsObj.status = status;
-    if (tags !== undefined) productFieldsObj.tags = tags;
-    if (tagsCommand !== undefined) productFieldsObj.tagsCommand = tagsCommand;
-
-    if (command === "NEW") {
-      if (!hasVariantFields) {
-        return { type: "failed", row: rowNum, lookupKey: handle, reason: "NEW command requires at least one variant field" };
-      }
-      const variantInput: VariantInput = { id: resolvedHandleProductId }; // sentinel — not used as variant GID
-      if (newSku !== undefined) variantInput.sku = newSku;
-      if (price !== undefined) variantInput.price = price;
-      if (compareAtPrice !== undefined) variantInput.compareAtPrice = compareAtPrice;
-      if (cost !== undefined) variantInput.cost = cost;
-      const createPending: ProcessedRow & { type: "pending" } = {
-        type: "pending",
-        row: rowNum,
-        lookupKey: handle,
-        productId: resolvedHandleProductId,
-        variantInput,
-        createVariant: true,
-      };
-      if (hasProductFields) createPending.productFields = productFieldsObj;
-      return createPending;
-    }
-
-    if (hasVariantFields) {
-      // Auto-resolve: product has exactly one variant — resolve and fall through to variant update.
-      try {
-        resolvedVariantId = await client.resolveProductToSingleVariantId(resolvedHandleProductId);
-        resolvedProductId = resolvedHandleProductId;
-      } catch (err) {
-        const reason = err instanceof ShopifyClientError ? err.message : "Variant lookup failed";
-        return { type: "failed", row: rowNum, lookupKey: handle, reason };
-      }
-    } else {
-      // Product-path: no variant fields — update product fields only.
-      const handlePathPending: ProcessedRow & { type: "pending" } = {
-        type: "pending",
-        row: rowNum,
-        lookupKey: handle,
-        productId: resolvedHandleProductId,
-        variantInput: { id: resolvedHandleProductId }, // sentinel
-        productPath: true,
-      };
-      if (hasProductFields) handlePathPending.productFields = productFieldsObj;
-      return handlePathPending;
+  } else if (command !== "NEW" && sku) {
+    try {
+      const ids = await client.resolveSkuToIds(sku);
+      resolvedVariantId = ids.variantId;
+      resolvedProductId = ids.productId;
+    } catch (err) {
+      const reason = err instanceof ShopifyClientError ? err.message : "SKU lookup failed";
+      return { type: "failed", row: rowNum, lookupKey: sku, reason };
     }
   } else {
     return { type: "failed", row: rowNum, lookupKey: "", reason: "no lookup key" };

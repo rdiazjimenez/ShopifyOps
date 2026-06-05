@@ -101,22 +101,8 @@ export function parseExcel(buffer: ArrayBuffer, sheetName: string): ParsedRow[] 
 
     const parsed: ParsedRow & { skipped: false } = { skipped: false, row: rowNum, command };
 
-    const variantIdCol = colOf("Variant ID");
-    if (variantIdCol != null) {
-      const v = cellValue(sheet, variantIdCol, r);
-      if (v != null) parsed.variantId = v;
-    }
-
-    const skuCol = colOf("Variant SKU");
-    if (skuCol != null) {
-      const v = cellValue(sheet, skuCol, r);
-      if (v != null) {
-        // NEW command: SKU is a field to set on the new variant, not a lookup key.
-        if (parsed.variantId || command === "NEW") parsed.newSku = v;
-        else parsed.sku = v;
-      }
-    }
-
+    // Parse Handle and ID (product-level anchors) BEFORE Variant SKU so that
+    // the newSku vs sku decision below can see whether a product anchor is present.
     const idCol = colOf("ID");
     if (idCol != null) {
       const v = cellValue(sheet, idCol, r);
@@ -127,6 +113,26 @@ export function parseExcel(buffer: ArrayBuffer, sheetName: string): ParsedRow[] 
     if (handleCol != null) {
       const v = cellValue(sheet, handleCol, r);
       if (v != null) parsed.handle = v;
+    }
+
+    const variantIdCol = colOf("Variant ID");
+    if (variantIdCol != null) {
+      const v = cellValue(sheet, variantIdCol, r);
+      if (v != null) parsed.variantId = v;
+    }
+
+    const skuCol = colOf("Variant SKU");
+    if (skuCol != null) {
+      const v = cellValue(sheet, skuCol, r);
+      if (v != null) {
+        // Variant SKU is a lookup key only when it is the sole identifier.
+        // When any product-level anchor (Handle, Product ID) or variant anchor
+        // (Variant ID) is present, SKU becomes a field to set (newSku), not a key.
+        if (parsed.handle || parsed.productId || parsed.variantId || command === "NEW")
+          parsed.newSku = v;
+        else
+          parsed.sku = v;
+      }
     }
 
     const priceCol = colOf("Variant Price");
