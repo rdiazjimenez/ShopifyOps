@@ -30,7 +30,7 @@ Key columns — variant: `Handle`, `ID`, `Variant ID`, `Variant SKU`, `Command`,
 
 `ID` is the Shopify Product ID (numeric or full GID). Used as a product-path lookup key when no variant identifier is present.
 
-When `Variant ID` is present, `Variant SKU` is treated as a field to update on that variant. When `Variant ID` is absent and `Command` is not `NEW`, `Variant SKU` is treated as the fallback lookup key. When `Command` is `NEW` and `Variant ID` is absent, `Variant SKU` is treated as a field to set on the new variant (not a lookup key).
+`Variant SKU` is treated as a **lookup key** only when Handle, Product ID, and Variant ID are all absent from the row. When Handle, Product ID, or Variant ID is present, `Variant SKU` becomes a field to set on the variant (replacement SKU), not a lookup key. When `Command` is `NEW`, `Variant SKU` is always a field to set on the new variant (never a lookup key).
 
 ### Command
 Per-row instruction column (Matrixify format). `UPDATE`: update if found, fail if not found. `MERGE`: update if found, fail if not found. `NEW`: create a new variant on the product identified by Handle or Product ID — requires at least one variant field; fails with `"NEW command requires at least one variant field"` if no variant fields present; uses `productVariantsBulkCreate`. Blank cell: treated as `MERGE` (matches Matrixify's default). Other values (`DELETE`, `REPLACE`, `IGNORE`, unknown) → row skipped.
@@ -53,21 +53,23 @@ When a product spans multiple rows in the Excel Workbook, Product Fields are rea
 For product-path rows (identified by Product ID or Handle, no variant): a later duplicate row with no variant fields is `skipped` with reason `"duplicate product row"`. A later row that has variant fields is processed normally for those fields — product field cells are still ignored.
 
 ### Lookup Key
-The identifier used to match an Excel row to a Shopify record. Two resolution paths exist:
+The identifier used to match an Excel row to a Shopify record. Priority chain: **Handle → Product ID → Variant ID → Variant SKU → fail `"no lookup key"`**.
 
-**Variant-path** (resolves to variantId + productId): used when the row targets variant fields or when a variant identifier is present.
-- `Variant ID` — highest precedence. When present, `Variant SKU` becomes a field to update (replacement SKU), not a lookup key.
-- `Variant SKU` — fallback when `Variant ID` is absent.
+**Handle** — first priority. Calls `resolveHandleToProductId` to obtain the Shopify product ID. Empty or whitespace-only Handle is treated as absent.
 
-**Product-path** (resolves to productId only, no variant): used only when no variant-level identifier is present.
-- `ID` (Product ID) — takes precedence over Handle.
-- `Handle` — last resort before failure. Empty or whitespace-only Handle is treated as absent — fails with `"no lookup key"`.
+**Product ID** — second priority, when Handle is absent. Normalised to a full GID (`gid://shopify/Product/<id>`) without an API call.
 
-Full priority chain: Variant ID → SKU → Product ID → Handle → fail `"no lookup key"`.
+**Combined Handle+VariantID and ProductID+VariantID paths**: when Handle or Product ID is the anchor and `Variant ID` is also present on the same row, `Variant ID` is used directly to target the specific variant — no `resolveProductToSingleVariantId` call is made. This enables multi-variant products to be targeted using the natural Matrixify export format (Handle + Variant ID both present).
 
-**`NEW` command exception**: For `NEW` rows, `Variant SKU` is never used as a lookup key. The priority chain collapses to Product ID → Handle → fail `"no lookup key"`. Variant fields (including `Variant SKU`) become create inputs, not lookup keys.
+**Standalone Variant ID** — third priority, when neither Handle nor Product ID is present. Calls `resolveVariantToProductId` to obtain the product ID.
 
-A row on the product-path with `UPDATE`/`MERGE` command that carries variant fields (price, compareAtPrice, cost): if the product has exactly one variant, the system auto-resolves that variant ID via `resolveProductToSingleVariantId` and proceeds as a variant-path row. If the product has multiple variants, fails with `"Product has multiple variants — Variant ID required"`. With `NEW` command, variant fields are allowed and trigger `productVariantsBulkCreate`.
+**Variant SKU** — last-resort lookup key, only when Handle, Product ID, and Variant ID are all absent. Calls `resolveSkuToIds`.
+
+Full priority chain: Handle → Product ID → Variant ID → Variant SKU → fail `"no lookup key"`.
+
+**`NEW` command exception**: For `NEW` rows, `Variant SKU` is never used as a lookup key. The priority chain collapses to Handle → Product ID → fail `"no lookup key"`. Variant fields (including `Variant SKU`) become create inputs, not lookup keys.
+
+A row where Handle or Product ID is the anchor but no Variant ID is present, with `UPDATE`/`MERGE` command and variant fields: if the product has exactly one variant, the system auto-resolves that variant ID via `resolveProductToSingleVariantId` and proceeds as a variant-path row. If the product has multiple variants, fails with `"Product has multiple variants — Variant ID required"`. With `NEW` command, variant fields are allowed and trigger `productVariantsBulkCreate`.
 
 ### BulkUpdateShopifyClient
 A TypeScript interface that abstracts Shopify Admin GraphQL transport for the Bulk Operation. Defines the methods needed by the row processor and batch orchestrator: `resolveVariantToProductId`, `resolveSkuToIds`, `resolveProductToSingleVariantId`, `resolveHandleToProductId`, `fetchProductTags`, `updateVariants`, `updateProduct`, `createVariants`. Two implementations exist: the embedded app's `InstalledShopifyClient` (backed by `admin.graphql()`) and the frozen worker's `ShopifyClient` (backed by `fetch` with env var credentials).
