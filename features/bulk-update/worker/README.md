@@ -1,5 +1,7 @@
 # bulk-update worker
 
+> **FROZEN** — This Worker is no longer the primary execution path. The embedded Shopify app now runs bulk-update logic directly via `authenticate.admin()`. See [ADR 0003](../docs/adr/0003-embedded-app-runs-business-logic-directly.md) for the rationale and revival contract. Bug fixes go to the app path only.
+
 Cloudflare Worker that accepts an Excel workbook upload and applies bulk SKU/price/cost updates to Shopify.
 
 ## Prerequisites

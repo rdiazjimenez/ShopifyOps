@@ -55,7 +55,7 @@ export interface BulkUpdateShopifyClient {
   ): Promise<UpdateVariantsResult>;
 }
 
-type AdminGraphQL = (
+export type AdminGraphQL = (
   query: string,
   options?: { variables?: Record<string, unknown> }
 ) => Promise<{ json(): Promise<unknown> }>;

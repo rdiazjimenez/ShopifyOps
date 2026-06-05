@@ -22,7 +22,12 @@ import {
 import { TitleBar } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import { parseSheetNames } from "../utils/sheet-parser";
-import { proxyToWorker } from "../utils/proxy.server";
+import { parseExcel } from "../services/bulk-update/excel-parser";
+import { runBatch } from "../services/bulk-update/batch-orchestrator";
+import {
+  InstalledShopifyClient,
+  type AdminGraphQL,
+} from "../services/bulk-update/shopify-client";
 import {
   buildAnnotatedWorkbook,
   type ResultReport,
@@ -34,49 +39,40 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  await authenticate.admin(request);
+  const { admin } = await authenticate.admin(request);
 
   const formData = await request.formData();
-  const file = formData.get("file");
-  const sheet = formData.get("sheet") as string;
+  const file = formData.get("file") as Blob | null;
+  const sheet = formData.get("sheet") as string | null;
   const dryRun = formData.get("dryRun") === "true";
 
-  const workerUrl = process.env.WORKER_URL;
-  const apiKey = process.env.API_KEY;
-
-  if (!workerUrl || !apiKey) {
-    return json(
-      { result: null, error: "Worker not configured." },
-      { status: 500 },
-    );
+  if (!file) {
+    return json({ result: null, error: "No file uploaded." }, { status: 400 });
+  }
+  if (!sheet) {
+    return json({ result: null, error: "No sheet specified." }, { status: 400 });
   }
 
-  let workerResponse: Response;
+  let parsedRows;
   try {
-    workerResponse = await proxyToWorker({
-      file: file as Blob,
-      sheet,
-      dryRun,
-      workerUrl,
-      apiKey,
-    });
-  } catch {
-    return json(
-      { result: null, error: "Failed to reach worker." },
-      { status: 502 },
-    );
+    const buffer = await file.arrayBuffer();
+    parsedRows = parseExcel(buffer, sheet);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Failed to parse file.";
+    return json({ result: null, error: message }, { status: 400 });
   }
 
-  const responseBody = await workerResponse.json();
+  const client = new InstalledShopifyClient(admin.graphql as AdminGraphQL);
 
-  if (!workerResponse.ok) {
-    return json(
-      { result: null, error: `Worker error ${workerResponse.status}` },
-      { status: workerResponse.status },
-    );
+  let report;
+  try {
+    report = await runBatch(parsedRows, client, dryRun);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Bulk update failed.";
+    return json({ result: null, error: message }, { status: 500 });
   }
 
-  return json({ result: responseBody as ResultReport, error: null });
+  return json({ result: report as ResultReport, error: null });
 };
 
 type SubmitSnapshot = {
