@@ -317,12 +317,13 @@ describe("processRow — product-path (Product ID, Issue #32)", () => {
     }
   });
 
-  it("SKU present (no Variant ID) → SKU wins over Product ID", async () => {
+  it("Product ID present (no Handle) → Product ID wins over SKU", async () => {
     const client = makeClient();
     const result = await processRow({ ...baseRow, sku: "SKU-001", productId: "111", price: "9.99" }, client);
     expect(result.type).toBe("pending");
     if (result.type === "pending") {
-      expect(result.lookupKey).toBe("SKU-001");
+      // Product ID takes priority over SKU in the Handle -> Product ID -> Variant ID -> SKU chain.
+      expect(result.lookupKey).toBe("111");
       expect(result.productPath).toBeUndefined();
     }
   });
@@ -417,22 +418,26 @@ describe("processRow - handle product-path (Issue #33)", () => {
     }
   });
 
-  it("SKU + Handle - SKU wins", async () => {
+  it("Handle present → Handle wins over SKU", async () => {
     const client = makeClient();
     const result = await processRow({ ...baseRow, sku: "SKU-001", handle: "my-product", price: "9.99" }, client);
     expect(result.type).toBe("pending");
     if (result.type === "pending") {
-      expect(result.lookupKey).toBe("SKU-001");
+      // Handle takes priority over SKU in the Handle -> Product ID -> Variant ID -> SKU chain.
+      expect(result.lookupKey).toBe("my-product");
       expect(result.productPath).toBeUndefined();
     }
   });
 
-  it("Product ID + Handle - Product ID wins", async () => {
+  it("Handle + Product ID - Handle wins (resolves product via handle)", async () => {
     const client = makeClient();
     const result = await processRow({ ...baseRow, productId: "111", handle: "my-product", title: "T" }, client);
     expect(result.type).toBe("pending");
     if (result.type === "pending") {
+      // Handle takes priority over Product ID in the Handle -> Product ID -> Variant ID -> SKU chain.
+      // Mock resolveHandleToProductId returns PRODUCT_GID, so productId still resolves to PRODUCT_GID.
       expect(result.productId).toBe("gid://shopify/Product/111");
+      expect(result.lookupKey).toBe("my-product");
     }
   });
 
@@ -520,6 +525,56 @@ describe("processRow - NEW command", () => {
     if (result.type === "failed") {
       expect(result.reason).toBe("NEW command requires at least one variant field");
       expect(result.lookupKey).toBe("my-product");
+    }
+  });
+});
+
+describe("processRow - combined lookup: Handle/ProductID + VariantID + newSku (Issue #68)", () => {
+  it("Handle + newSku (single variant) succeeds: handle resolves product, single variant auto-resolved, SKU updated", async () => {
+    const client = makeClient();
+    const result = await processRow({ ...baseRow, handle: "my-product", newSku: "UPDATED-SKU" }, client);
+    expect(result.type).toBe("pending");
+    if (result.type === "pending") {
+      expect(result.productId).toBe(PRODUCT_GID);
+      expect(result.variantInput.id).toBe(VARIANT_GID);
+      expect(result.variantInput.sku).toBe("UPDATED-SKU");
+      expect(result.productPath).toBeUndefined();
+    }
+  });
+
+  it("Handle + Variant ID + newSku (multi-variant): handle resolves product, Variant ID picks variant directly", async () => {
+    const client = makeClient();
+    const result = await processRow({ ...baseRow, handle: "my-product", variantId: VARIANT_GID, newSku: "UPDATED-SKU" }, client);
+    expect(result.type).toBe("pending");
+    if (result.type === "pending") {
+      expect(result.productId).toBe(PRODUCT_GID);
+      // Variant ID used directly -- resolveProductToSingleVariantId NOT called
+      expect(client.resolveProductToSingleVariantId).not.toHaveBeenCalled();
+      expect(result.variantInput.id).toBe(VARIANT_GID);
+      expect(result.variantInput.sku).toBe("UPDATED-SKU");
+    }
+  });
+
+  it("Product ID + Variant ID + newSku: product ID resolves, Variant ID picks variant directly", async () => {
+    const client = makeClient();
+    const result = await processRow({ ...baseRow, productId: "111", variantId: VARIANT_GID, newSku: "UPDATED-SKU" }, client);
+    expect(result.type).toBe("pending");
+    if (result.type === "pending") {
+      expect(result.productId).toBe("gid://shopify/Product/111");
+      // Variant ID used directly -- resolveProductToSingleVariantId NOT called
+      expect(client.resolveProductToSingleVariantId).not.toHaveBeenCalled();
+      expect(result.variantInput.id).toBe(VARIANT_GID);
+      expect(result.variantInput.sku).toBe("UPDATED-SKU");
+    }
+  });
+
+  it("Variant SKU alone (no handle, no product ID, no variant ID) still used as lookup key", async () => {
+    const client = makeClient();
+    const result = await processRow({ ...baseRow, sku: "LOOKUP-SKU", price: "9.99" }, client);
+    expect(result.type).toBe("pending");
+    if (result.type === "pending") {
+      expect(result.lookupKey).toBe("LOOKUP-SKU");
+      expect(client.resolveSkuToIds).toHaveBeenCalledWith("LOOKUP-SKU");
     }
   });
 });

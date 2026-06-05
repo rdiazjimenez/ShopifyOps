@@ -845,7 +845,7 @@ describe("runBatch - handle product-path rows (Issue #33)", () => {
     expect(report.succeeded).toBe(1);
   });
 
-  it("ID wins over Handle: Product ID present → result uses Product ID GID as productId", async () => {
+  it("Handle wins over Product ID: Handle present → result uses Handle as lookupKey", async () => {
     const client = makeClient({
       updateProduct: vi.fn().mockResolvedValue({ product: { id: PRODUCT_A }, userErrors: [] }),
     });
@@ -856,7 +856,8 @@ describe("runBatch - handle product-path rows (Issue #33)", () => {
 
     const report = await runBatch(rows, client, false);
     expect(report.succeeded).toBe(1);
-    expect(report.rows[0]?.lookupKey).toBe("111");
+    // Handle takes priority over Product ID in the Handle -> Product ID -> Variant ID -> SKU chain.
+    expect(report.rows[0]?.lookupKey).toBe("my-product");
   });
 
   it("variant row before handle-path row (reversed order) → both updateVariants and updateProduct fire", async () => {
