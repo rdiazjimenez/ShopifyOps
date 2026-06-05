@@ -4,6 +4,7 @@
  * Delete after issue #45 is shipped.
  */
 import { useState, useCallback } from "react";
+import * as XLSX from "xlsx";
 import {
   Page,
   Layout,
@@ -47,9 +48,8 @@ export default function UploadProto() {
       if (!uploaded) return;
 
       try {
-        const { read, utils } = await import("xlsx");
         const buffer = await uploaded.arrayBuffer();
-        const wb = read(buffer, { type: "array" });
+        const wb = XLSX.read(buffer, { type: "array" });
         if (!wb.SheetNames.length) throw new Error("Workbook has no sheets.");
         setFile(uploaded);
         setSheets(wb.SheetNames);
