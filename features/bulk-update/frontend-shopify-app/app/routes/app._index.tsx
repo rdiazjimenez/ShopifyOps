@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import * as XLSX from "xlsx";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
@@ -15,13 +15,18 @@ import {
   Banner,
   InlineStack,
   Checkbox,
-  Box,
   Spinner,
+  DataTable,
+  Badge,
 } from "@shopify/polaris";
 import { TitleBar } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import { parseSheetNames } from "../utils/sheet-parser";
 import { proxyToWorker } from "../utils/proxy.server";
+import {
+  buildAnnotatedWorkbook,
+  type ResultReport,
+} from "../utils/annotate-workbook";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   await authenticate.admin(request);
@@ -40,7 +45,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const apiKey = process.env.API_KEY;
 
   if (!workerUrl || !apiKey) {
-    return json({ result: null, error: "Worker not configured." }, { status: 500 });
+    return json(
+      { result: null, error: "Worker not configured." },
+      { status: 500 },
+    );
   }
 
   let workerResponse: Response;
@@ -53,7 +61,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       apiKey,
     });
   } catch {
-    return json({ result: null, error: "Failed to reach worker." }, { status: 502 });
+    return json(
+      { result: null, error: "Failed to reach worker." },
+      { status: 502 },
+    );
   }
 
   const responseBody = await workerResponse.json();
@@ -65,8 +76,21 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     );
   }
 
-  return json({ result: responseBody, error: null });
+  return json({ result: responseBody as ResultReport, error: null });
 };
+
+type SubmitSnapshot = {
+  buffer: ArrayBuffer;
+  sheet: string;
+  fileName: string;
+};
+
+const STATUS_TONE: Record<string, "success" | "critical" | "warning" | "info"> =
+  {
+    succeeded: "success",
+    failed: "critical",
+    skipped: "warning",
+  };
 
 export default function BulkUpdateIndex() {
   const fetcher = useFetcher<typeof action>();
@@ -77,6 +101,9 @@ export default function BulkUpdateIndex() {
   const [selectedSheet, setSelectedSheet] = useState("");
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [dryRun, setDryRun] = useState(false);
+
+  // Snapshot of what was submitted — stable reference for download even if user picks a new file.
+  const submitSnapshotRef = useRef<SubmitSnapshot | null>(null);
 
   const isSubmitting = fetcher.state !== "idle";
   const actionError = fetcher.data?.error ?? null;
@@ -116,6 +143,11 @@ export default function BulkUpdateIndex() {
 
   const handleSubmit = useCallback(() => {
     if (!fileBuffer || !selectedSheet || !file) return;
+    submitSnapshotRef.current = {
+      buffer: fileBuffer,
+      sheet: selectedSheet,
+      fileName: file.name,
+    };
     const fd = new FormData();
     fd.append(
       "file",
@@ -129,8 +161,33 @@ export default function BulkUpdateIndex() {
     fetcher.submit(fd, { method: "POST", encType: "multipart/form-data" });
   }, [fileBuffer, selectedSheet, file, dryRun, fetcher]);
 
+  const handleDownload = useCallback(() => {
+    const snapshot = submitSnapshotRef.current;
+    if (!result || !snapshot) return;
+    try {
+      const wb = buildAnnotatedWorkbook(snapshot.buffer, snapshot.sheet, result);
+      const baseName = snapshot.fileName.replace(/\.xlsx$/i, "");
+      XLSX.writeFile(wb, `${baseName}_annotated.xlsx`);
+    } catch (e) {
+      setUploadError(
+        e instanceof Error
+          ? `Download failed: ${e.message}`
+          : "Download failed.",
+      );
+    }
+  }, [result]);
+
   const sheetOptions = sheets.map((s) => ({ label: s, value: s }));
   const canSubmit = !!file && !!selectedSheet && !isSubmitting;
+
+  const tableRows = (result?.rows ?? []).map((r) => [
+    String(r.row),
+    r.lookupKey ?? "",
+    <Badge tone={STATUS_TONE[r.status] ?? "info"} key={r.row}>
+      {r.status}
+    </Badge>,
+    r.reason ?? "",
+  ]);
 
   return (
     <Page>
@@ -146,11 +203,7 @@ export default function BulkUpdateIndex() {
               {(uploadError || actionError) && (
                 <Banner
                   tone="critical"
-                  onDismiss={() => {
-                    setUploadError(null);
-                    // Clear fetcher data by re-navigating isn't straightforward;
-                    // actionError clears on next submission automatically.
-                  }}
+                  onDismiss={() => setUploadError(null)}
                 >
                   {uploadError ?? actionError}
                 </Banner>
@@ -195,24 +248,77 @@ export default function BulkUpdateIndex() {
                 </Button>
                 {isSubmitting && <Spinner size="small" />}
               </InlineStack>
-
-              {result && (
-                <Box
-                  padding="400"
-                  background="bg-surface-active"
-                  borderWidth="025"
-                  borderRadius="200"
-                  borderColor="border"
-                  overflowX="scroll"
-                >
-                  <pre style={{ margin: 0, fontSize: 12 }}>
-                    <code>{JSON.stringify(result, null, 2)}</code>
-                  </pre>
-                </Box>
-              )}
             </BlockStack>
           </Card>
         </Layout.Section>
+
+        {result && (
+          <>
+            <Layout.Section>
+              <Card>
+                <BlockStack gap="300">
+                  <Text as="h2" variant="headingMd">
+                    Summary
+                  </Text>
+                  <InlineStack gap="600">
+                    <BlockStack gap="100">
+                      <Text as="span" variant="bodySm" tone="subdued">
+                        Total
+                      </Text>
+                      <Text as="span" variant="headingLg">
+                        {String(result.total ?? 0)}
+                      </Text>
+                    </BlockStack>
+                    <BlockStack gap="100">
+                      <Text as="span" variant="bodySm" tone="subdued">
+                        Succeeded
+                      </Text>
+                      <Text as="span" variant="headingLg" tone="success">
+                        {String(result.succeeded ?? 0)}
+                      </Text>
+                    </BlockStack>
+                    <BlockStack gap="100">
+                      <Text as="span" variant="bodySm" tone="subdued">
+                        Failed
+                      </Text>
+                      <Text as="span" variant="headingLg" tone="critical">
+                        {String(result.failed ?? 0)}
+                      </Text>
+                    </BlockStack>
+                    <BlockStack gap="100">
+                      <Text as="span" variant="bodySm" tone="subdued">
+                        Skipped
+                      </Text>
+                      <Text as="span" variant="headingLg">
+                        {String(result.skipped ?? 0)}
+                      </Text>
+                    </BlockStack>
+                  </InlineStack>
+                  <Button onClick={handleDownload}>
+                    Download annotated workbook
+                  </Button>
+                </BlockStack>
+              </Card>
+            </Layout.Section>
+
+            {tableRows.length > 0 && (
+              <Layout.Section>
+                <Card>
+                  <BlockStack gap="300">
+                    <Text as="h2" variant="headingMd">
+                      Row Results
+                    </Text>
+                    <DataTable
+                      columnContentTypes={["text", "text", "text", "text"]}
+                      headings={["Row", "Lookup Key", "Status", "Reason"]}
+                      rows={tableRows}
+                    />
+                  </BlockStack>
+                </Card>
+              </Layout.Section>
+            )}
+          </>
+        )}
       </Layout>
     </Page>
   );
