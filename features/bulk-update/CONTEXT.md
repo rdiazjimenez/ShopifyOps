@@ -69,11 +69,17 @@ Full priority chain: Variant ID → SKU → Product ID → Handle → fail `"no 
 
 A row on the product-path with `UPDATE`/`MERGE` command that carries variant fields (price, compareAtPrice, cost): if the product has exactly one variant, the system auto-resolves that variant ID via `resolveProductToSingleVariantId` and proceeds as a variant-path row. If the product has multiple variants, fails with `"Product has multiple variants — Variant ID required"`. With `NEW` command, variant fields are allowed and trigger `productVariantsBulkCreate`.
 
+### BulkUpdateShopifyClient
+A TypeScript interface that abstracts Shopify Admin GraphQL transport for the Bulk Operation. Defines the methods needed by the row processor and batch orchestrator: `resolveVariantToProductId`, `resolveSkuToIds`, `resolveProductToSingleVariantId`, `resolveHandleToProductId`, `fetchProductTags`, `updateVariants`, `updateProduct`, `createVariants`. Two implementations exist: the embedded app's `InstalledShopifyClient` (backed by `admin.graphql()`) and the frozen worker's `ShopifyClient` (backed by `fetch` with env var credentials).
+
 ### Shopify API
 Shopify Admin GraphQL API, version `2026-04`. Pinned in the Shopify Client Module (`shopify-client.ts`) and `wrangler.toml`. Do not use `unstable` or `latest`. Required scopes: `write_products`, `read_products`, `write_inventory`, `read_inventory`. `write_inventory` is needed because cost is stored on `InventoryItem` and updated via `inventoryItem.cost` inside `productVariantsBulkUpdate`.
 
 ### Store Credentials
-Single Shopify store. Admin API token stored as Cloudflare Worker secret (`SHOPIFY_ACCESS_TOKEN`). Store domain stored as `SHOPIFY_STORE_DOMAIN`.
+Single Shopify store. Two credential sources depending on path:
+
+- **Embedded app path:** Credentials come from the active Shopify session via `authenticate.admin(request)`. No env vars for store domain or access token — the session carries the installed store's token automatically.
+- **Standalone worker path (legacy):** Admin API token stored as Cloudflare Worker secret (`SHOPIFY_ACCESS_TOKEN`). Store domain stored as `SHOPIFY_STORE_DOMAIN`. This path is frozen; see ADR 0003.
 
 ### Frontend
 A UI layer that lets a user upload an Excel Workbook, select a sheet from a dropdown (populated client-side), toggle Dry Run, submit the Bulk Operation, view a Result Report (summary card + per-row table), and download an annotated copy of the workbook. Three flavors, each in its own directory under `features/bulk-update/`:
@@ -84,13 +90,13 @@ A UI layer that lets a user upload an Excel Workbook, select a sheet from a drop
 | `frontend-pages/` | Cloudflare Pages + Cloudflare Access | Google SSO (single merchant) | `shopifyops-bulk-update-ui` |
 | `frontend-shopify-app/` | Shopify Admin embedded app | Shopify session token | Vercel |
 
-Flavors share the same `worker/` backend. Developed independently; each merges to `main` when complete.
+The embedded app (`frontend-shopify-app/`) runs business logic directly and does not call the worker. The worker and `frontend-pages/` are frozen legacy paths — code is available in the repo but not actively deployed. See ADR 0003.
 
 ### Pages Function
-A server-side Cloudflare Pages Function (`frontend-pages/functions/api/bulk-update.js`) that proxies requests from the frontend to the worker. Adds the `X-Api-Key` header from the `API_KEY` Pages secret. The worker URL is set via `WORKER_URL` environment variable on the Pages project. The `API_KEY` is never sent to the browser.
+A server-side Cloudflare Pages Function (`frontend-pages/functions/api/bulk-update.js`) that proxies requests from the frontend to the worker. Adds the `X-Api-Key` header from the `API_KEY` Pages secret. The worker URL is set via `WORKER_URL` environment variable on the Pages project. The `API_KEY` is never sent to the browser. **This path is frozen and not actively deployed.** See ADR 0003.
 
 ### Shopify App Action
-A React Router `action` function inside `frontend-shopify-app/` that proxies multipart upload requests to the worker. Mirrors the Pages Function pattern: injects `X-Api-Key` from `API_KEY` env var, forwards `sheet` and `dryRun` query params, streams worker response back to the client. `WORKER_URL` and `API_KEY` are Vercel environment variables. Session validation (Shopify session token) is handled by `@shopify/shopify-app-remix` before the proxy executes.
+A React Router `action` function inside `frontend-shopify-app/` that authenticates via `authenticate.admin(request)`, then executes the Bulk Operation directly using the installed store's Admin GraphQL client. No proxy to the worker. Business logic lives in `app/services/bulk-update/` (ported from the worker). Returns the same `ResultReport` shape. See ADR 0003.
 
 ### Shopify Embedded App
 The `frontend-shopify-app/` flavor. A React Router app scaffolded from the Shopify React Router template, hosted on Vercel. Registered as a **custom distribution app** in Shopify Partners (single-store, no App Review). Uses Polaris components and App Bridge for native Admin chrome. Session storage via Prisma + Vercel Postgres (Neon free tier). Scopes: `read_products`, `write_products`, `read_inventory`, `write_inventory`. Excel sheet-name preview and annotated workbook download are both client-side via SheetJS npm package.
