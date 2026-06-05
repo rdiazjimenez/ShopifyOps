@@ -1,3 +1,8 @@
+/**
+ * PROTOTYPE — throwaway. Answers: does SheetJS work client-side in this
+ * Remix+Polaris setup and do DropZone+Select compose cleanly?
+ * Delete after issue #45 is shipped.
+ */
 import { useState, useCallback } from "react";
 import * as XLSX from "xlsx";
 import {
@@ -15,28 +20,24 @@ import {
 import { TitleBar } from "@shopify/app-bridge-react";
 import type { LoaderFunctionArgs } from "@remix-run/node";
 import { authenticate } from "../shopify.server";
-import { parseSheetNames } from "../utils/sheet-parser";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   await authenticate.admin(request);
   return null;
 };
 
-export default function BulkUpdateIndex() {
+export default function UploadProto() {
   const [file, setFile] = useState<File | null>(null);
-  const [fileBuffer, setFileBuffer] = useState<ArrayBuffer | null>(null);
   const [sheets, setSheets] = useState<string[]>([]);
   const [selectedSheet, setSelectedSheet] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const handleDrop = useCallback(
     async (_: File[], acceptedFiles: File[], rejectedFiles: File[]) => {
-      // Reset state on every drop
       setSheets([]);
       setSelectedSheet("");
       setError(null);
       setFile(null);
-      setFileBuffer(null);
 
       if (rejectedFiles.length > 0) {
         setError("File rejected. Upload a valid .xlsx file.");
@@ -48,14 +49,16 @@ export default function BulkUpdateIndex() {
 
       try {
         const buffer = await uploaded.arrayBuffer();
-        const sheetNames = parseSheetNames(buffer);
+        const wb = XLSX.read(buffer, { type: "array" });
+        if (!wb.SheetNames.length) throw new Error("Workbook has no sheets.");
         setFile(uploaded);
-        setFileBuffer(buffer);
-        setSheets(sheetNames);
-        setSelectedSheet(sheetNames[0]);
+        setSheets(wb.SheetNames);
+        setSelectedSheet(wb.SheetNames[0]);
       } catch (e) {
         setError(
-          e instanceof Error ? e.message : "Unknown error reading file.",
+          e instanceof Error
+            ? `Could not read file: ${e.message}`
+            : "Unknown error reading file.",
         );
       }
     },
@@ -67,7 +70,7 @@ export default function BulkUpdateIndex() {
 
   return (
     <Page>
-      <TitleBar title="Bulk Update" />
+      <TitleBar title="Upload prototype (throwaway)" />
       <Layout>
         <Layout.Section>
           <Card>
@@ -110,6 +113,28 @@ export default function BulkUpdateIndex() {
                   Submit
                 </Button>
               </InlineStack>
+
+              {/* State dump for prototype evaluation */}
+              <details>
+                <summary>
+                  <Text as="span" variant="bodySm">
+                    State (prototype debug)
+                  </Text>
+                </summary>
+                <pre style={{ fontSize: 12, margin: "8px 0 0" }}>
+                  {JSON.stringify(
+                    {
+                      file: file?.name ?? null,
+                      sheets,
+                      selectedSheet,
+                      canSubmit,
+                      error,
+                    },
+                    null,
+                    2,
+                  )}
+                </pre>
+              </details>
             </BlockStack>
           </Card>
         </Layout.Section>
